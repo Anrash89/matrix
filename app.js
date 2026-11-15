@@ -5,7 +5,7 @@ const $=s=>document.querySelector(s),clone=x=>JSON.parse(JSON.stringify(x)),e=x=
 const C=MandalaCore,D=MandalaDaily,P=MandalaPlan,labels={todo:'Не начато',doing:'В работе',done:'Готово'};
 const colors=[['#f3e4db','#e4c5b3','#965b40'],['#e9eddf','#ced9b9','#63754c'],['#e5eced','#bfd1d5','#557880'],['#f3eadd','#e4cfae','#9d7d46'],['#e8eee6','#c5d7c0','#597956'],['#eee8e2','#d9c9bd','#8b705b'],['#e9e8ed','#cfccdb','#77708b'],['#f2e7e3','#e1c5bb','#9b6a5b']];
 let pendingState=null;
-let viewedDay=null, lastRenderedDate='';
+let viewedDay=null, lastRenderedDate='', openSteps=new Set([0]);
 let state=clone(window.MANDALA_SEED),lastRaw=null,storageError='',view='today',mode=matchMedia('(max-width:760px)').matches?'areas':'full',selected=0,filterArea='',filterStatus='',search='',toastTimer,cloud=null,cloudMessage='',cloudBusy=false;
 try{lastRaw=localStorage.getItem(KEY);if(lastRaw)state=C.validate(JSON.parse(lastRaw));else{C.validate(state);lastRaw=JSON.stringify(state);localStorage.setItem(KEY,lastRaw);}}catch(err){storageError='Не удалось прочитать сохранение. Исходные данные не перезаписаны. Открой «Данные и облако».';}
 function toast(msg){$('#toast').textContent=msg;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
@@ -36,180 +36,373 @@ function render(){
  $('#income').textContent=g.target?g.current.toLocaleString('ru-RU')+' / '+g.target.toLocaleString('ru-RU')+' ₽':'Задать цель →';
  $('#income-note').textContent=g.target?'факт / цель · редактируется вручную':'сумма пока не выбрана';
  document.querySelectorAll('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);if(b.classList.contains('nav'))b.setAttribute('aria-current',b.dataset.view===view?'page':'false');});
- const titles={today:['План на 90 дней','Пять заданий на каждый день.'],matrix:['Твоя большая цель.<span>По шагам.</span>','Собери то, что важно, в одну понятную картину.'],actions:['Действия.<span>Из намерения в результат.</span>','Все 64 шага: выбирай, уточняй, отмечай прогресс.'],focus:['Фокус недели.<span>Только главное.</span>','До трёх действий. Достаточно, чтобы двигаться вперёд.'],reviews:['Рефлексия.<span>Замечай движение.</span>','Что сработало, чему научился и какой шаг следующий.']};
+ const titles={today:['Рабочий месяц',''],analytics:['Динамика','Выручка, воронка и прогресс по заданиям'],pipeline:['Воронка','Итоги продаж по источникам'],reports:['Отчёты','Итоги текущего месяца и следующий план'],matrix:['Твоя большая цель.<span>По шагам.</span>','Собери то, что важно, в одну понятную картину.'],actions:['Действия.<span>Из намерения в результат.</span>','Все 64 шага: выбирай, уточняй, отмечай прогресс.'],focus:['Фокус недели.<span>Только главное.</span>','До трёх действий. Достаточно, чтобы двигаться вперёд.'],reviews:['Рефлексия.<span>Замечай движение.</span>','Что сработало, чему научился и какой шаг следующий.']};
  $('#page-title').innerHTML=titles[view][0];$('#page-description').textContent=titles[view][1];
- const breadcrumbs={today:'Сегодня',matrix:'Моя матрица',actions:'Все действия',focus:'Фокус недели',reviews:'Рефлексия'};
+ const breadcrumbs={today:'Рабочий месяц',analytics:'Динамика',pipeline:'Воронка',reports:'Отчёты',matrix:'Моя матрица',actions:'Все действия',focus:'Фокус недели',reviews:'Рефлексия'};
  $('#breadcrumb').textContent=breadcrumbs[view]+' / Личный план';
- document.body.classList.toggle('today-view',view==='today');
- if(view==='today')renderToday();else if(view==='matrix')renderMatrix();else if(view==='reviews')renderReviews();else renderActions();
+ document.body.dataset.screen=view;
+ if(view==='today')renderToday();else if(view==='analytics')renderAnalytics();else if(view==='pipeline')renderPipeline();else if(view==='reports')renderReports();else if(view==='matrix')renderMatrix();else if(view==='reviews')renderReviews();else renderActions();
  saveStatus();
 }
 function money(value) {
  return value.toLocaleString('ru-RU') + ' ₽';
 }
+function ratio(value, target) {
+ return Math.round(Math.min(1, Math.max(0, value / target)) * 100);
+}
+function metric(label, value, detail, accent = '') {
+ return '<article class="dash-metric ' + accent + '"><span>' + label + '</span><strong>' +
+  e(value) + '</strong><small>' + e(detail) + '</small></article>';
+}
+function targetOf(month) {
+ return month.plan?.target ?? P.firstTarget;
+}
+function heading(period, label) {
+ return '<div class="panel-head"><div><span class="caption">' + e(period) +
+  '</span><h2>' + e(label) + '</h2></div></div>';
+}
 
-function goalMeter(label, value, target, detail) {
- const percent = Math.round(Math.min(1, Math.max(0, value / target)) * 100);
- return '<div class="cycle-meter"><span>' + label + '</span><strong>' + money(value) +
-  ' <small>/ ' + money(target) + '</small></strong><div class="progress-track">' +
-  '<i style="width:' + percent + '%"></i></div><small>' + e(detail) + '</small></div>';
+function cashChart(stats, month, compact = false) {
+ const elapsed = month.start ? Math.max(0, Math.min(30, P.offset(localDate(), month.start) + 1)) : 0;
+ const points = stats.series.slice(0, elapsed);
+ const max = Math.max(1, ...points.map(day => Math.abs(day.balance)));
+ const hasData = points.some(day => day.net !== 0);
+ const chart = stats.series.map((day, index) => {
+  const height = Math.max(2, Math.round(Math.abs(day.balance) / max * 100));
+  const label = 'День ' + day.day + ' · ' + money(day.balance);
+  return '<button type="button" class="cash-column' + (day.balance < 0 ? ' negative' : '') +
+    (index >= elapsed ? ' future' : '') + '" data-act="chart-point" data-i="' + index +
+   '" aria-label="' + e(label) + '" title="' + e(label) + '"' + (index >= elapsed ? ' disabled' : '') +
+   '><span style="height:' + height + '%"></span></button>';
+ }).join('');
+ return '<section class="dash-panel ' + (compact ? 'chart-compact' : '') + '">' +
+  heading('Поступления минус возвраты', 'Выручка по дням') +
+  '<div class="chart-values"><strong>' + money(stats.net) + '</strong><span id="chart-readout">' +
+  (hasData ? 'Нажми на столбик, чтобы увидеть сумму' : 'График заполнится после первой оплаты') + '</span></div>' +
+  '<div class="cash-chart" aria-label="Накопленная выручка за 30 дней">' + chart + '</div>' +
+  '<div class="chart-axis"><span>День 1</span><span>10</span><span>20</span><span>30</span></div></section>';
+}
+
+function funnelChart(stats, withLink = false) {
+ const steps = [...P.stages, ['payments', 'Оплаты']];
+ const max = Math.max(1, ...Object.values(stats.funnel));
+ return '<section class="dash-panel">' + heading('За текущие 30 дней', 'Воронка продаж') +
+  '<div class="funnel-chart">' + steps.map(([key, label]) => '<div class="funnel-row"><span>' + label +
+  '</span><div class="meter-track"><i style="width:' + ratio(stats.funnel[key], max) + '%"></i></div><b>' +
+  stats.funnel[key] + '</b></div>').join('') + '</div>' +
+  (withLink ? '<button class="text-btn" data-view="pipeline">Внести цифры →</button>' : '') + '</section>';
 }
 
 function renderToday() {
- const cycle = P.stateOf(state);
+ const month = P.stateOf(state);
  const today = localDate();
- const elapsed = cycle.start ? P.offset(today, cycle.start) : 0;
- const present = Math.min(89, Math.max(0, elapsed));
- const day = viewedDay ?? present;
- const phase = Math.floor(day / 30);
- const progress = cycle.checks[day];
- const count = P.completedCount(progress);
- const date = cycle.start ? P.addDays(cycle.start, day) : '';
- const editable = cycle.start && date <= today;
- const revenue = P.totals(cycle, today);
- const paidLabel = revenue.reached ? 'Первые 100 000 ₽ набраны ' + dateFmt(revenue.reached) : 'Все сервисы с начала цикла';
- const firstLabel = cycle.start ? 'С ' + dateFmt(cycle.start) + ' по ' + dateFmt(revenue.cutoff) : 'Первые 30 дней от даты старта';
- const tasks = P.days[day].map((task, slot) => {
+ const elapsed = month.start ? P.offset(today, month.start) : 0;
+ const current = Math.min(29, Math.max(0, elapsed));
+ const day = viewedDay ?? current;
+ const progress = month.checks[day];
+ const completed = P.completedCount(progress);
+ const date = month.start ? P.addDays(month.start, day) : '';
+ const editable = month.start && date <= today;
+ const stats = P.totals(month, today);
+ const target = targetOf(month);
+ const title = month.plan?.title ?? 'Первые продажи';
+ const phase = ['Поиск и первые демо', 'Проверка предложения', 'Пилоты и оплаты', 'Дожим и итоги'][Math.min(3, Math.floor(day / 7))];
+ const tasks = (month.plan?.days ?? P.days)[day].map((task, slot) => {
   const done = !!(progress & (1 << slot));
-  return '<article class="daily-card' + (done ? ' completed' : '') + '">' +
-   '<button class="daily-check" data-act="plan-toggle" data-i="' + day + '" data-j="' + slot +
-   '" aria-pressed="' + done + '" aria-label="' + e((done ? 'Вернуть: ' : 'Выполнено: ') + P.labels[slot]) +
-   '"' + (editable ? '' : ' disabled') + '>' + (done ? '✓' : '') + '</button>' +
-   '<div><div class="daily-name"><span>' + P.labels[slot] + '</span></div><p class="plan-task">' + e(task) +
-   '</p></div></article>';
+  const open = openSteps.has(slot);
+  return '<article class="mission ' + (done ? 'done' : '') + '">' +
+   '<button class="mission-check" data-act="plan-toggle" data-i="' + day + '" data-j="' + slot +
+   '" aria-pressed="' + done + '" aria-label="' + e((done ? 'Вернуть: ' : 'Выполнено: ') + task.title) +
+   '"' + (editable ? '' : ' disabled') + '>' + (done ? '✓' : String(slot + 1).padStart(2, '0')) + '</button>' +
+   '<details data-slot="' + slot + '"' + (open ? ' open' : '') + '><summary><span class="task-category category-' + slot + '">' +
+   P.labels[slot] + '</span><span class="mission-title">' + e(task.title) + '</span><span class="details-hint" aria-hidden="true"></span></summary>' +
+   '<ol>' + task.steps.map(step => '<li>' + e(step) + '</li>').join('') +
+   '</ol><div class="definition"><strong>Готово, когда</strong><p>' + e(task.done) + '</p></div></details></article>';
  }).join('');
- const options = P.days.map((_, i) => '<option value="' + i + '"' + (day === i ? ' selected' : '') +
-  '>День ' + (i + 1) + (cycle.checks[i] ? ' · ' + P.completedCount(cycle.checks[i]) + '/5' : '') + '</option>').join('');
- const phases = P.phases.map(([range, title, description], i) =>
-  '<button class="phase-button' + (i === phase ? ' active' : '') + '" data-act="plan-jump" data-i="' + (i * 30) +
-  '"><span>' + range + ' дней</span><strong>' + title + '</strong><small>' + description + '</small></button>').join('');
+ const dayOptions = (month.plan?.days ?? P.days).map((_, index) => '<option value="' + index +
+  '"' + (index === day ? ' selected' : '') + '>День ' + (index + 1) +
+  (month.checks[index] ? ' · ' + P.completedCount(month.checks[index]) + '/5' : '') + '</option>').join('');
  const projects = D.data(state).projects.map(project => '<li><div><strong>' + e(project.title) +
-  '</strong><small>' + e(project.detail || 'Без описания') + (project.active ? '' : ' · На паузе') +
-  '</small></div><button class="btn small" data-act="project" data-id="' + e(project.id) +
-  '" aria-label="' + e('Настройки проекта ' + project.title) + '">Изменить</button></li>').join('');
- const complete = cycle.checks.filter(mask => mask === 31).length;
- let dayStatus = !cycle.start ? 'Предпросмотр плана. Для отметок нажми «Начать 90 дней».' :
-  !editable ? 'Этот день ещё не наступил.' :
-  elapsed >= 90 && day === present ? '90 дней прошли. Подведи итоги цикла.' : 'Закрыто дней: ' + complete + ' из 90';
- const gate = elapsed >= 30 && revenue.total < P.firstTarget
-  ? '<div class="notice">До первых 100 000 ₽ осталось ' + money(P.firstTarget - revenue.total) +
-    '. На этом этапе направь бизнес-задачи на проверенное предложение и устранение причины, по которой покупатели не платят.</div>'
-  : '';
+  '</strong><small>' + e(project.detail || 'Без описания') + '</small></div>' +
+  '<button class="btn small" data-act="project" data-id="' + e(project.id) + '" aria-label="' +
+  e('Настройки проекта ' + project.title) + '">Изменить</button></li>').join('');
+ const period = month.start ? dateFmt(month.start) + ' — ' + dateFmt(P.addDays(month.start, 29)) : '30 дней с даты старта';
+ const markText = !month.start ? 'Начни месяц, чтобы отмечать задачи' : !editable ? 'Этот день ещё не наступил' :
+  elapsed >= 30 ? 'Месяц завершён. Подведи итоги в отчёте.' : 'Выполнено ' + completed + ' из 5';
  $('#view-content').innerHTML =
-  '<section class="cycle-ledger" aria-label="Денежные цели">' +
-  goalMeter('Первый рубеж за 30 дней', revenue.firstMonth, P.firstTarget, firstLabel) +
-  goalMeter('Первый миллион', revenue.total, P.finalTarget, paidLabel) +
-  '<div class="cycle-actions">' + (cycle.start ? '<button class="btn primary" data-act="payment">＋ Записать оплату</button>' :
-    '<button class="btn primary" data-act="plan-start">Начать 90 дней</button>') +
-  '<button class="text-btn" data-act="payments">Журнал оплат →</button></div></section>' +
-  '<div class="cycle-phases" aria-label="Этапы плана">' + phases + '</div>' + gate +
-  '<div class="daily-layout"><section aria-label="Задания на день"><div class="daily-header"><div>' +
-  '<div class="daily-date">' + (date ? e(dateFmt(date)) + ' · ' : '') + e(P.phases[phase][1]) + '</div>' +
-  '<h2>День ' + (day + 1) + ' <small>из 90</small></h2></div><div class="daily-toolbar cycle-nav">' +
+  '<div class="dashboard-hero"><div><div class="cycle-label"><i></i>' + e(period) +
+  '</div><h1>' + e(title) + '</h1><p>Пять заданий на день. Цель месяца — ' + money(target) + ' поступлений после возвратов.</p></div>' +
+  '<div class="hero-actions">' + (month.start ? '<button class="btn primary" data-act="payment">＋ Записать оплату</button>' :
+    '<button class="btn primary" data-act="plan-start">Начать месяц</button>') +
+  '<button class="btn" data-view="reports">Отчёт месяца</button></div></div>' +
+  '<div class="dash-metrics">' + metric('Выручка месяца', money(stats.net), 'Из ' + money(target) + ' · ' + ratio(stats.net, target) + '%', 'metric-main') +
+  metric('Первый миллион', money(P.lifetime(state, today)), 'Накопительно по всем сервисам') +
+  metric('Задачи месяца', stats.done + ' / 150', 'Отмечено в календаре') +
+  metric('Проведено демо', String(stats.funnel.demos), 'По журналу воронки') + '</div>' +
+  '<div class="month-layout"><section><div class="mission-header"><div><div class="caption">' +
+  e((date ? dateFmt(date) + ' · ' : '') + (month.plan ? 'План месяца' : phase)) + '</div><h2>День ' + (day + 1) +
+  '<small> / 30</small></h2></div><div class="day-picker">' +
   '<button class="btn small" data-act="plan-jump" data-i="' + (day - 1) + '" aria-label="Предыдущий день"' + (day === 0 ? ' disabled' : '') + '>←</button>' +
-  '<select id="plan-day" aria-label="День плана">' + options + '</select>' +
-  '<button class="btn small" data-act="plan-jump" data-i="' + (day + 1) + '" aria-label="Следующий день"' + (day === 89 ? ' disabled' : '') + '>→</button>' +
-  (day !== present ? '<button class="btn small" data-act="plan-today">Сегодня</button>' : '') +
-  '</div></div><div class="daily-progress"><span>Выполнено <strong>' + count + ' из 5</strong></span>' +
-  '<div class="progress-track" aria-hidden="true"><i style="width:' + (count * 20) + '%"></i></div>' +
-  '<small>' + e(dayStatus) + '</small></div><div class="daily-cards">' + tasks + '</div></section>' +
-  '<aside><div class="side-card daily-side"><h3>Продажи</h3><p>Каналы, план воронки и готовые тексты для первых контактов.</p>' +
-  '<a class="btn" href="SALES.html" target="_blank" rel="noopener">Открыть инструкцию →</a>' +
-  '<button class="btn" data-act="plan-report">Отчёт для обновления плана</button></div>' +
-  '<div class="side-card daily-side"><h3>Мои проекты</h3><p>Список идей и сервисов для следующих проверок спроса.</p>' +
-  '<ul class="project-list">' + projects + '</ul><button class="btn" data-act="project">＋ Добавить проект</button></div></aside></div>';
+  '<select id="plan-day" aria-label="День плана">' + dayOptions + '</select>' +
+  '<button class="btn small" data-act="plan-jump" data-i="' + (day + 1) + '" aria-label="Следующий день"' + (day === 29 ? ' disabled' : '') + '>→</button>' +
+  (day !== current ? '<button class="btn small" data-act="plan-today">Сегодня</button>' : '') + '</div></div>' +
+  '<p class="day-status">' + e(markText) + '</p><div class="day-strip" aria-label="Календарь заданий">' +
+  month.checks.map((mask, index) => '<button data-act="plan-jump" data-i="' + index +
+    '" class="' + (day === index ? 'selected ' : '') + (mask === 31 ? 'finished' : mask ? 'partial' : '') +
+    '" aria-label="День ' + (index + 1) + ', отмечено ' + P.completedCount(mask) + ' из 5" aria-current="' +
+    (day === index ? 'true' : 'false') + '">' + (index + 1) + '</button>').join('') +
+  '</div><div class="mission-list">' + tasks + '</div></section>' +
+  '<aside class="dashboard-side">' + cashChart(stats, month, true) + funnelChart(stats, true) +
+  '<section class="dash-panel">' + heading('Открытые источники', 'Где искать клиентов') +
+  '<p>Запросы для Telegram и 2ГИС, отбор компаний, тексты для первого сообщения и после демо.</p>' +
+  '<div class="source-links"><a class="btn small" href="SALES.html">Поиск и шаблоны →</a>' +
+  '<button class="btn small" data-act="payments">Журнал оплат</button></div></section>' +
+  '<section class="dash-panel">' + heading('SellerCtrl, FLRAD и новые идеи', 'Мои проекты') +
+  '<ul class="project-list">' + projects + '</ul><button class="btn small" data-act="project">＋ Добавить проект</button></section></aside></div>';
+}
+
+function renderAnalytics() {
+ const month = P.stateOf(state);
+ const stats = P.totals(month, localDate());
+ const byWeek = [0, 1, 2, 3, 4].map(week => stats.series.slice(week * 7, week * 7 + 7).reduce((sum, day) => sum + day.done, 0));
+ const table = Object.entries(stats.bySource).map(([source, item]) => '<tr><th>' + source + '</th>' +
+  [...P.stages.map(([name]) => item[name]), item.payments, money(item.net)].map(value => '<td>' + value + '</td>').join('') + '</tr>').join('');
+ $('#view-content').innerHTML = '<div class="dash-metrics">' +
+  metric('Фактически получено', money(stats.received), 'Положительные платежи') +
+  metric('Возвраты', money(stats.refunds), 'Вычтены из выручки') +
+  metric('После возвратов', money(stats.net), 'До расходов и налогов', 'metric-main') +
+  metric('Средний платёж', stats.funnel.payments ? money(Math.round(stats.received / stats.funnel.payments)) : '—', 'По поступившим платежам') +
+  '</div><div class="analytics-grid">' + cashChart(stats, month) + funnelChart(stats, true) +
+  '<section class="dash-panel">' + heading('Отметки по неделям', 'Выполнение плана') +
+  '<div class="funnel-chart">' + byWeek.map((done, week) => {
+   const max = (week === 4 ? 2 : 7) * 5;
+   return '<div class="funnel-row"><span>' + (week === 4 ? 'Дни 29–30' : 'Неделя ' + (week + 1)) +
+    '</span><div class="meter-track"><i style="width:' + ratio(done, max) + '%"></i></div><b>' + done + '/' + max + '</b></div>';
+  }).join('') + '</div></section>' +
+  '<section class="dash-panel">' + heading('После возвратов', 'Выручка по сервисам') +
+  '<ul class="project-list">' + Object.entries(stats.byProduct).map(([key, value]) =>
+   '<li><strong>' + key + '</strong><span>' + money(value) + '</span></li>').join('') + '</ul>' +
+  '<button class="btn small" data-act="payments">Журнал оплат</button></section></div>' +
+  '<section class="dash-panel table-panel">' + heading('Фактические показатели', 'Результат по источникам') +
+  '<div class="table-scroll"><table><thead><tr><th>Источник</th>' +
+  [...P.stages.map(([, label]) => label), 'Оплаты', 'Выручка'].map(label => '<th>' + label + '</th>').join('') +
+  '</tr></thead><tbody>' + table + '</tbody></table></div></section>';
+}
+
+function editDateMax(month) {
+ const end = P.addDays(month.start, 29);
+ return end < localDate() ? end : localDate();
 }
 
 function startPlan() {
  if (P.stateOf(state).start) return;
- showDialog('<h2 id="dialog-title">Начать цикл</h2><p>Оплаты за первые 30 дней считаются с выбранной даты. Отмечать можно сегодняшний и прошедшие дни.</p>' +
-  '<form id="start-form"><label for="cycle-start">Начало первого дня</label><input id="cycle-start" name="start" type="date" required value="' +
-  localDate() + '" max="' + localDate() + '">' + buttons() + '</form>', '90 ДНЕЙ');
+ const earliest = P.nextStart(state);
+ const start = earliest > localDate() ? earliest : localDate();
+ showDialog('<h2 id="dialog-title">Начать месяц</h2><p>Период длится 30 дней с выбранной даты.</p>' +
+  '<form id="start-form"><label for="cycle-start">Первый день</label><input id="cycle-start" name="start" type="date" required value="' +
+  start + '"' + (earliest ? ' min="' + earliest + '"' : '') + '>' + buttons() + '</form>', 'ПЕРВЫЕ ПРОДАЖИ');
  $('#start-form').onsubmit = event => {
   event.preventDefault();
-  const start = new FormData(event.target).get('start');
-  if (!P.validDate(start) || start > localDate()) return;
+  const startDate = new FormData(event.target).get('start');
+  if (!P.validDate(startDate) || (earliest && startDate < earliest)) return;
   const next = clone(state);
-  next.cycle = { ...P.stateOf(next), start };
+  next.month = { ...P.stateOf(next), start: startDate };
   viewedDay = null;
+  openSteps = new Set([0]);
+  submit(next);
+ };
+}
+
+function sourceChoices(value) {
+ return P.sources.map(source => '<option' + (value === source ? ' selected' : '') + '>' + source + '</option>').join('');
+}
+
+function renderPipeline() {
+ const month = P.stateOf(state);
+ const stats = P.totals(month, localDate());
+ const rows = month.activity.slice().sort((a, b) => b.date.localeCompare(a.date) || a.source.localeCompare(b.source))
+  .map(entry => '<tr><th>' + e(dateFmt(entry.date)) + '</th><td>' + entry.source + '</td>' +
+  P.stages.map(([key]) => '<td>' + entry[key] + '</td>').join('') +
+  '<td><button class="btn small" data-act="activity" data-date="' + entry.date + '" data-source="' +
+  e(entry.source) + '">Изменить</button></td></tr>').join('');
+ $('#view-content').innerHTML = '<div class="analytics-grid">' + funnelChart(stats) +
+  '<section class="dash-panel">' + heading('Одна строка на канал и день', 'Записывай итог работы') +
+  '<p>Считай новые адресные обращения, содержательные ответы, проведённые демо и отправленные предложения. Разные этапы могут относиться к разным людям и датам. Оплаты берутся из журнала денег.</p>' +
+  '<button class="btn primary" data-act="activity">＋ Записать итоги дня</button></section></div>' +
+  '<section class="dash-panel table-panel">' + heading('С разбивкой по источникам', 'Журнал воронки') +
+  (rows ? '<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th>' +
+   P.stages.map(([, label]) => '<th>' + label + '</th>').join('') + '<th></th></tr></thead><tbody>' +
+   rows + '</tbody></table></div>' : '<p>Записей пока нет. Внеси цифры после первого рабочего блока.</p>') + '</section>';
+}
+
+function activityEditor(date, source) {
+ const month = P.stateOf(state);
+ if (!month.start) { startPlan(); return; }
+ const max = editDateMax(month);
+ if (month.start > max) { toast('Месяц ещё не начался.'); return; }
+ showDialog('<h2 id="dialog-title">Итоги по каналу</h2><p>Если строка за эту дату уже есть, её значения подставятся при выборе канала.</p>' +
+  '<form id="activity-form"><div class="form-row"><div><label for="activity-date">Дата</label><input id="activity-date" name="date" type="date"' +
+  ' required min="' + month.start + '" max="' + max + '" value="' + (date ?? max) + '"></div>' +
+  '<div><label for="activity-source">Источник</label><select id="activity-source" name="source">' +
+  sourceChoices(source) + '</select></div></div><div class="form-row">' +
+  P.stages.map(([key, label]) => '<div><label for="activity-' + key + '">' + label + '</label>' +
+   '<input id="activity-' + key + '" name="' + key + '" type="number" min="0" max="1000" step="1" required value="0"></div>').join('') +
+  '</div>' + buttons() + '</form>', 'ВОРОНКА');
+ const form = $('#activity-form');
+ function loadEntry() {
+  const item = month.activity.find(entry => entry.date === form.elements.date.value &&
+    entry.source === form.elements.source.value);
+  for (const [key] of P.stages) form.elements[key].value = item?.[key] ?? 0;
+ }
+ form.elements.date.onchange = loadEntry;
+ form.elements.source.onchange = loadEntry;
+ loadEntry();
+ form.onsubmit = event => {
+  event.preventDefault();
+  const data = new FormData(form);
+  const entry = { date: data.get('date'), source: data.get('source') };
+  for (const [key] of P.stages) entry[key] = Number(data.get(key));
+  const next = clone(state);
+  next.month.activity = next.month.activity.filter(item => item.date !== entry.date || item.source !== entry.source);
+  if (P.stages.some(([key]) => entry[key] !== 0)) next.month.activity.push(entry);
   submit(next);
  };
 }
 
 function paymentEditor(previousId = '') {
- const cycle = P.stateOf(state);
- if (!cycle.start) { startPlan(); return; }
- const previous = cycle.payments.find(item => item.id === previousId);
+ const month = P.stateOf(state);
+ if (!month.start) { startPlan(); return; }
+ const max = editDateMax(month);
+ if (month.start > max) { toast('Месяц ещё не начался.'); return; }
+ const previous = month.payments.find(item => item.id === previousId);
  showDialog('<h2 id="dialog-title">' + (previous ? 'Изменить запись' : 'Записать оплату') +
-  '</h2><p>Укажи только проведённый платёж или возврат. Для пакета с подпиской внеси общую сумму одним платежом.</p>' +
+  '</h2><p>Запиши проведённый платёж или возврат. Для пакета с подпиской внеси сумму один раз.</p>' +
   '<form id="payment-form"><div class="form-row"><div><label for="pay-date">Дата</label><input id="pay-date" name="date" type="date" required min="' +
-  cycle.start + '" max="' + localDate() + '" value="' + (previous?.date ?? localDate()) + '"></div>' +
+  month.start + '" max="' + max + '" value="' + (previous?.date ?? max) + '"></div>' +
   '<div><label for="pay-product">Сервис</label><select id="pay-product" name="product">' +
   P.products.map(product => '<option' + (product === previous?.product ? ' selected' : '') + '>' + product + '</option>').join('') +
-  '</select></div></div><div class="form-row"><div><label for="pay-amount">Сумма, ₽</label><input id="pay-amount" type="number" min="1" max="100000000" step="1" name="amount" required value="' +
+  '</select></div><div><label for="pay-amount">Сумма, ₽</label><input id="pay-amount" type="number" min="1" max="100000000" step="1" name="amount" required value="' +
   (previous ? Math.abs(previous.amount) : '') + '"></div><div><label for="pay-kind">Операция</label>' +
   '<select id="pay-kind" name="kind"><option value="paid">Поступление</option><option value="refund"' +
   (previous?.amount < 0 ? ' selected' : '') + '>Возврат</option></select></div></div>' +
-  '<label for="pay-note">Пометка, например «запуск» или название нового сервиса</label><input id="pay-note" name="note" maxlength="100" value="' +
-  e(previous?.note) + '">' + buttons() + '</form>', 'ФАКТИЧЕСКИЕ ДЕНЬГИ');
+  '<label for="pay-source">Источник клиента</label><select id="pay-source" name="source">' +
+  sourceChoices(previous?.source ?? 'Другое') + '</select>' +
+  '<label for="pay-note">Пометка, например «запуск»</label><input id="pay-note" name="note" maxlength="100" value="' +
+  e(previous?.note) + '">' + buttons() + '</form>', 'ОПЛАТЫ');
  $('#payment-form').onsubmit = event => {
   event.preventDefault();
   const form = new FormData(event.target);
   const next = clone(state);
-  next.cycle = P.stateOf(next);
   const payment = {
    id: previous?.id ?? (crypto.randomUUID ? crypto.randomUUID() : 'payment-' + Date.now()),
-   date: form.get('date'),
-   product: form.get('product'),
+   date: form.get('date'), product: form.get('product'), source: form.get('source'),
    amount: Number(form.get('amount')) * (form.get('kind') === 'refund' ? -1 : 1),
    note: form.get('note').trim(),
   };
-  if (payment.date > localDate()) return;
-  const index = next.cycle.payments.findIndex(item => item.id === payment.id);
-  if (index === -1) next.cycle.payments.push(payment);
-  else next.cycle.payments[index] = payment;
+  const index = next.month.payments.findIndex(item => item.id === payment.id);
+  if (index === -1) next.month.payments.push(payment);
+  else next.month.payments[index] = payment;
   submit(next);
  };
 }
 
 function paymentHistory() {
- const cycle = P.stateOf(state);
- const revenue = P.totals(cycle, localDate());
- const rows = cycle.payments.slice().reverse().sort((a, b) => b.date.localeCompare(a.date)).map(item =>
+ const month = P.stateOf(state);
+ const stats = P.totals(month, localDate());
+ const rows = month.payments.slice().reverse().sort((a, b) => b.date.localeCompare(a.date)).map(item =>
   '<li><div><strong>' + money(item.amount) + ' · ' + e(item.product) + '</strong><small>' +
-  e(dateFmt(item.date)) + (item.note ? ' · ' + e(item.note) : '') + '</small></div><div class="ledger-row-actions">' +
-  '<button class="btn small" data-act="payment" data-id="' + e(item.id) + '">Изменить</button>' +
-  '<button class="btn small danger" data-act="payment-delete" data-id="' + e(item.id) + '">Удалить</button></div></li>'
+  e(dateFmt(item.date)) + ' · ' + e(item.source) + (item.note ? ' · ' + e(item.note) : '') + '</small></div>' +
+  '<div class="ledger-row-actions"><button class="btn small" data-act="payment" data-id="' + e(item.id) +
+  '">Изменить</button><button class="btn small danger" data-act="payment-delete" data-id="' + e(item.id) + '">Удалить</button></div></li>'
  ).join('');
- showDialog('<h2 id="dialog-title">Журнал оплат</h2><p>Получено ' + money(revenue.paid) +
-  ' · возвращено ' + money(revenue.refunded) + ' · осталось ' + money(revenue.total) + '.</p>' +
+ showDialog('<h2 id="dialog-title">Журнал оплат</h2><p>Получено ' + money(stats.received) +
+  ' · возвращено ' + money(stats.refunds) + ' · после возвратов ' + money(stats.net) + '.</p>' +
   (rows ? '<ul class="project-list ledger-rows">' + rows + '</ul>' : '<p>Записей пока нет.</p>') +
-  '<div class="dialog-actions"><button class="btn primary" data-act="' + (cycle.start ? 'payment' : 'plan-start') + '">' +
-  (cycle.start ? '＋ Записать оплату' : 'Начать 90 дней') + '</button></div>', 'ПЛАТЕЖИ');
+  '<div class="dialog-actions"><button class="btn primary" data-act="' + (month.start ? 'payment' : 'plan-start') + '">' +
+  (month.start ? '＋ Записать оплату' : 'Начать месяц') + '</button></div>', 'ДЕНЬГИ');
 }
 
-function planReport() {
- const cycle = P.stateOf(state);
- const revenue = P.totals(cycle, localDate());
- const active = D.data(state).projects.filter(project => project.active).map(project => project.title).join(', ');
- const lines = [
-  'Мандала · отчёт для следующего плана',
-  'Начало: ' + (cycle.start || 'цикл ещё не начат'),
-  'Заданий выполнено: ' + cycle.checks.reduce((sum, mask) => sum + P.completedCount(mask), 0) + ' из 450',
-  'Результат первых 30 дней на сегодня: ' + money(revenue.firstMonth),
-  'Деньги с начала цикла: ' + money(revenue.total) + ' после возвратов',
-  ...P.products.map(product => product + ': ' + money(revenue.byProduct[product])),
-  'Активные проекты: ' + active,
-  '',
-  'Контакты / ответы / демо / оплаты: ',
-  'Продления и причины отказов: ',
-  'Лучший канал и средний чек: ',
-  'Сколько времени готов уделять работе: ',
-  'Что нужно изменить в плане: ',
- ];
- showDialog('<h2 id="dialog-title">Данные для обновления</h2><p>Дополни воронку и отправь текст в чат, когда захочешь пересмотреть следующий этап.</p>' +
-  '<label for="plan-report">Текст отчёта</label><textarea id="plan-report" rows="14">' +
-  e(lines.join('\n')) + '</textarea><div class="dialog-actions"><button class="btn primary" data-act="report-copy">Скопировать</button></div>', 'ИТОГИ ЦИКЛА');
+function renderReports() {
+ const month = P.stateOf(state);
+ const archive = (state.monthHistory ?? []).slice().reverse().map(entry =>
+  '<li><div><strong>' + e(entry.title) + '</strong><small>' + e(dateFmt(entry.start)) + ' — ' + e(dateFmt(entry.end)) +
+  '</small></div><div>' + money(entry.net) + ' · ' + entry.done + '/150</div></li>').join('');
+ $('#view-content').innerHTML = '<div class="analytics-grid reports-grid"><section class="dash-panel">' +
+  heading('Передай в чат для пересмотра плана', 'Отчёт за месяц') +
+  '<p>Файл содержит задачи и отметки, воронку, суммы по источникам и сервисам, а также заметки ниже. Пометки к платежам не входят в отчёт.</p>' +
+  '<form id="report-form">' + P.reportFields.map(([name, label]) => field(name, label, month.notes[name] ?? '', 900, true)).join('') +
+  '<div class="report-actions"><button class="btn" type="submit">Сохранить заметки</button>' +
+  '<button class="btn primary" type="button" data-act="report-download">↓ Скачать отчёт JSON</button></div></form></section>' +
+  '<section><div class="dash-panel">' + heading('Каждый цикл — 30 дней', 'Следующий месяц') +
+  '<ol class="next-month"><li>Скачай отчёт и пришли его в чат. Напиши, что хочешь изменить.</li>' +
+  '<li>Попроси новый план «Мандалы» в формате mandala-month-plan JSON.</li>' +
+  '<li>После завершения цикла загрузи файл. Текущий итог уйдёт в архив.</li></ol>' +
+  '<button class="btn primary" data-act="month-import">↑ Загрузить следующий план</button>' +
+  '<p class="small-note">Чтобы сохранить все старые записи, перед сменой месяца скачай отчёт или полную резервную копию.</p></div>' +
+  '<div class="dash-panel archive-panel">' + heading('Закрытые циклы', 'Архив месяцев') +
+  (archive ? '<ul class="project-list">' + archive + '</ul>' : '<p>Первый итог появится здесь после смены месяца.</p>') + '</div></section></div>';
+ $('#report-form').onsubmit = event => {
+  event.preventDefault();
+  if (saveReportNotes()) toast('Заметки сохранены');
+ };
+}
+
+function saveReportNotes() {
+ const form = $('#report-form');
+ if (!form) return true;
+ const values = new FormData(form);
+ const notes = Object.fromEntries(P.reportFields.map(([key]) => [key, values.get(key).trim()]));
+ if (P.reportFields.every(([key]) => (P.stateOf(state).notes[key] ?? '') === notes[key])) return true;
+ return mutate(next => {
+  next.month = P.stateOf(next);
+  next.month.notes = notes;
+ });
+}
+
+function downloadReport() {
+ if (!saveReportNotes()) return;
+ const projects = D.data(state).projects.map(({ title, detail, active }) => ({ title, detail, active }));
+ const report = P.buildReport(state, localDate(), projects);
+ exportData(report, 'mandala-report-' + (report.month.start || localDate()) + '.json', 'Отчёт подготовлен');
+}
+
+function previewNewMonth(plan) {
+ const month = P.stateOf(state);
+ const earliest = P.nextStart(state);
+ if (month.start && earliest > localDate()) {
+  toast('Новый цикл можно установить с ' + dateFmt(earliest) + '. Текущий месяц ещё идёт.');
+  return;
+ }
+ if ((state.monthHistory ?? []).length >= 36) {
+  toast('Архив достиг 36 месяцев. Скачай полную резервную копию.');
+  return;
+ }
+ const start = earliest > localDate() ? earliest : localDate();
+ showDialog('<h2 id="dialog-title">' + e(plan.title) +
+  '</h2><p>30 дней · 150 заданий · цель ' + money(plan.target) +
+  '. При установке итог предыдущего месяца будет сохранён в архиве.</p>' +
+  '<form id="new-month-form"><label for="next-start">Когда начать</label><input id="next-start" name="start" type="date" required value="' +
+  start + '"' + (earliest ? ' min="' + earliest + '"' : '') + '>' + buttons() + '</form>', 'НОВЫЙ ПЛАН');
+ $('#new-month-form').onsubmit = event => {
+  event.preventDefault();
+  const date = new FormData(event.target).get('start');
+  if (!P.validDate(date) || (earliest && date < earliest)) return;
+  const next = clone(state);
+  if (month.start) {
+   const stats = P.totals(month, localDate());
+   next.monthHistory = [...(state.monthHistory ?? []), { start: month.start, end: P.addDays(month.start, 29),
+    title: month.plan?.title ?? 'Первые продажи', target: targetOf(month), net: stats.net, done: stats.done }];
+  }
+  next.month = { start: date, checks: Array(30).fill(0), payments: [], activity: [], notes: {}, plan };
+  viewedDay = null;
+  openSteps = new Set([0]);
+  if (commit(next)) {
+   $('#editor').close();
+   view = 'today';
+   render();
+   toast('Следующий план загружен');
+  }
+ };
 }
 
 function editProject(id) {
@@ -299,7 +492,7 @@ function reviewEditor(id){
  $('#review-form').onsubmit=ev=>{ev.preventDefault();const f=new FormData(ev.target),next=clone(state),entry={id:r.id,date:f.get('date'),win:f.get('win').trim(),lesson:f.get('lesson').trim(),next:f.get('next').trim()};if(!entry.win&&!entry.lesson&&!entry.next){$('#form-error').textContent='Добавь хотя бы одну мысль.';return;}const idx=next.reviews.findIndex(x=>x.id===r.id);if(idx<0)next.reviews.push(entry);else next.reviews[idx]=entry;submit(next);};
 }
 function submit(next){try{C.validate(next);if(commit(next)){$('#editor').close();toast('Изменения сохранены');}}catch(err){$('#form-error').textContent=err.message;}}
-function exportData(data=pendingState||state,name='mandala-'+localDate()+'.json'){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000);toast('Резервная копия подготовлена');}
+function exportData(data=pendingState||state,name='mandala-'+localDate()+'.json', message='Резервная копия подготовлена'){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000);toast(message);}
 function help(){showDialog('<h2 id="dialog-title">Одна цель. Восемь опор.</h2><p>Мандала 9×9 помогает превратить большое намерение в конкретные действия. Это формат планирования, связанный с методом Харады; здесь — его практическая адаптация.</p><div class="help-grid"><div><b>01 · Центр.</b> Запиши главную цель и дату проверки результата.</div><div><b>02 · Восемь направлений.</b> Вокруг центра — то, что поможет прийти к цели. Каждое направление повторяется в центре своего блока.</div><div><b>03 · 64 действия.</b> В каждом внешнем блоке восемь шагов. Нажимай на ячейки, уточняй результат, срок и статус.</div><div><b>04 · Ритм.</b> Выбери три действия на неделю. В конце недели запиши итоги и обнови фокус.</div></div><p class="small-note">Процент показывает долю выполненных действий, а не вероятность достижения цели. Повторяющиеся привычки можно возвращать в работу после очередного цикла.</p><div class="dialog-actions"><button class="btn primary" data-act="close">Понятно, начнём</button></div>','КАК ПОЛЬЗОВАТЬСЯ');}
 function settings(){
  let config='';try{config=localStorage.getItem(CONFIG)||'';}catch{}
@@ -366,34 +559,34 @@ async function cloudSave(){
 document.addEventListener('click',async ev=>{
  const b=ev.target.closest('button,a.brand');if(!b)return;
  if(b.matches('a.brand')){ev.preventDefault();view='today';viewedDay=null;render();return;}
- if(b.dataset.view){view=b.dataset.view;if(view==='today')viewedDay=null;render();return;}
+ if(b.dataset.view){view=b.dataset.view;if(view==='today'){viewedDay=null;openSteps=new Set([0]);}render();return;}
  if(b.dataset.mode){mode=b.dataset.mode;render();return;}
  const act=b.dataset.act,i=Number(b.dataset.i),j=Number(b.dataset.j);
  if(act==='close')$('#editor').close();
  else if(act==='goal')goalEditor();
  else if(act==='project')editProject(b.dataset.id);
  else if(act==='plan-start')startPlan();
- else if(act==='plan-jump' && i>=0 && i<90){viewedDay=i;renderToday();}
- else if(act==='plan-today'){viewedDay=null;renderToday();}
+ else if(act==='plan-jump' && i>=0 && i<30){viewedDay=i;openSteps=new Set([0]);renderToday();}
+ else if(act==='plan-today'){viewedDay=null;openSteps=new Set([0]);renderToday();}
  else if(act==='plan-toggle'){
-  const cycle=P.stateOf(state);
-  if(cycle.start && i>=0 && i<90 && j>=0 && j<5 && P.addDays(cycle.start,i)<=localDate()){
-   mutate(next=>{next.cycle=P.stateOf(next);next.cycle.checks[i]^=1<<j;});
-   const nextButton = $('[data-act="plan-toggle"][data-j="'+j+'"]');
-   nextButton?.focus({preventScroll:true});
+  const month=P.stateOf(state);
+  if(month.start && i>=0 && i<30 && j>=0 && j<5 && P.addDays(month.start,i)<=localDate()){
+   mutate(next=>{next.month.checks[i]^=1<<j;});
+   $('[data-act="plan-toggle"][data-j="'+j+'"]')?.focus({preventScroll:true});
   }
  }
+ else if(act==='chart-point'){
+  const point=P.totals(P.stateOf(state),localDate()).series[i];
+  if(point)$('#chart-readout').textContent='День '+point.day+' · '+money(point.balance);
+ }
+ else if(act==='activity')activityEditor(b.dataset.date,b.dataset.source);
  else if(act==='payment')paymentEditor(b.dataset.id);
  else if(act==='payments')paymentHistory();
  else if(act==='payment-delete'&&confirm('Удалить эту запись об оплате?')){
-  if(mutate(next=>{next.cycle.payments=next.cycle.payments.filter(item=>item.id!==b.dataset.id);}))paymentHistory();
+  if(mutate(next=>{next.month.payments=next.month.payments.filter(item=>item.id!==b.dataset.id);}))paymentHistory();
  }
- else if(act==='plan-report')planReport();
- else if(act==='report-copy'){
-  const field=$('#plan-report');
-  try{await navigator.clipboard.writeText(field.value);$('#editor').close();toast('Отчёт скопирован');}
-  catch{field.focus();field.select();field.setSelectionRange(0,field.value.length);}
- }
+ else if(act==='report-download')downloadReport();
+ else if(act==='month-import')$('#month-file').click();
  else if(act==='help')help();
  else if(act==='settings')settings();
  else if(act==='task')taskEditor(i,j);
@@ -416,7 +609,22 @@ document.addEventListener('click',async ev=>{
  else if(act==='cloud-logout'&&cloud&&!cloudBusy){try{await cloud.authSDK.signOut(cloud.auth);cloud.revision=null;cloudMessage='Вход завершён. Локальная матрица остаётся на этом устройстве.';updateCloudUI();}catch(err){toast(cloudError(err));}}
 });
 document.addEventListener('input',ev=>{if(ev.target.id==='search'){search=ev.target.value;renderTaskList();}});
-document.addEventListener('change',ev=>{if(ev.target.id==='plan-day'){viewedDay=Number(ev.target.value);renderToday();$('#plan-day').focus();}if(ev.target.id==='area-filter'){filterArea=ev.target.value;renderTaskList();}if(ev.target.id==='status-filter'){filterStatus=ev.target.value;renderTaskList();}});
+document.addEventListener('change',ev=>{if(ev.target.id==='plan-day'){viewedDay=Number(ev.target.value);openSteps=new Set([0]);renderToday();$('#plan-day').focus();}if(ev.target.id==='area-filter'){filterArea=ev.target.value;renderTaskList();}if(ev.target.id==='status-filter'){filterStatus=ev.target.value;renderTaskList();}});
+document.addEventListener('toggle', event => {
+ const slot=event.target.dataset?.slot;
+ if(slot===undefined || !event.target.isConnected)return;
+ if(event.target.open)openSteps.add(Number(slot));
+ else openSteps.delete(Number(slot));
+},true);
+$('#month-file').onchange=async event=>{
+ const file=event.target.files[0];
+ event.target.value='';
+ if(!file)return;
+ try{
+  if(file.size>400000)throw Error('Файл плана больше 400 КБ.');
+  previewNewMonth(P.validatePlan(JSON.parse(await file.text())));
+ }catch(error){toast('Не удалось загрузить план: '+error.message);}
+};
 $('#import-file').onchange=async ev=>{const file=ev.target.files[0];ev.target.value='';if(!file)return;try{if(file.size>2000000)throw Error('Размер файла больше 2 МБ');const data=C.validate(JSON.parse(await file.text()));if(!confirm('Заменить матрицу данными из «'+file.name+'»? Текущая версия останется в предыдущей копии.'))return;storageError='';if(commit(data)){$('#editor').close();toast('Матрица импортирована');}}catch(err){toast('Импорт отменён: '+err.message);}};
 window.addEventListener('storage',ev=>{if(ev.key===KEY&&ev.newValue!==lastRaw){if($('#editor').open){toast('Матрица изменена в другой вкладке. Закрой редактор и обнови страницу.');return;}try{state=C.validate(JSON.parse(ev.newValue));lastRaw=ev.newValue;render();toast('Подхвачены изменения из другой вкладки');}catch{toast('Данные в другой вкладке изменились. Обнови страницу.');}}});
 render();

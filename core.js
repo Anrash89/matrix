@@ -12,7 +12,10 @@
   if(focused>3)throw Error('В фокусе может быть не больше 3 действий.');
   if(!Array.isArray(data.reviews)||data.reviews.length>200||data.reviews.some(r=>!r||!str(r.id,80)||!date(r.date)||!str(r.win,3000)||!str(r.lesson,3000)||!str(r.next,3000)))throw Error('Некорректный журнал рефлексии.');
   if(data.daily!==undefined)daily.validate(data.daily);
-  if(data.cycle!==undefined)plan.validate(data.cycle);
+  if(data.cycle!==undefined)plan.validateLegacy(data.cycle);
+  if(data.month!==undefined)plan.validate(data.month);
+  if(data.monthHistory!==undefined)plan.validateHistory(data.monthHistory);
+  if(data.month?.start && data.monthHistory?.at(-1)?.end >= data.month.start)throw Error('Месяцы в резервной копии пересекаются.');
   if(JSON.stringify(data).length>300000)throw Error('Резервная копия слишком большая.');
   return data;
  }

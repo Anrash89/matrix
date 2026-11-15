@@ -1,40 +1,48 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const core=require('../core.js');
-const ctx={window:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../seed.js'),'utf8'),ctx);
-const fresh=()=>JSON.parse(JSON.stringify(ctx.window.MANDALA_SEED));
-test('81 cells, 64 distinct actions and each area linked twice',()=>{
- const s=fresh(),cells=core.cells(s).flat();
- assert.equal(cells.length,81);assert.equal(cells.filter(c=>c.type==='goal').length,1);
- const actions=cells.filter(c=>c.type==='action');assert.equal(actions.length,64);
- assert.equal(new Set(actions.map(c=>s.areas[c.area].actions[c.action].id)).size,64);
- for(let i=0;i<8;i++)assert.equal(cells.filter(c=>c.type==='area'&&c.area===i).length,2);
-});
-test('roundtrip preserves notes, dates, focus, reviews and money',()=>{
- const s=fresh();s.goal.target=250000;s.goal.current=12300;
- Object.assign(s.areas[1].actions[2],{status:'doing',focus:true,notes:'Текст <img src=x onerror=alert(1)> & "кавычки"',due:'2027-01-15'});
- s.reviews.push({id:'r1',date:'2026-11-15',win:'Победа',lesson:'Вывод',next:'Шаг'});
- const r=core.validate(JSON.parse(JSON.stringify(s)));assert.deepEqual(r,s);assert.deepEqual(core.stats(r),{done:0,doing:1,focus:1,total:64});
-});
-test('reject malformed imports without replacing source',()=>{
- const cases=[
- s=>s.areas.pop(),s=>s.areas[0].actions.pop(),s=>s.areas[0].actions[0].status='fake',
- s=>s.goal.current=-1,s=>s.goal.target=Infinity,s=>s.areas[1].id=s.areas[0].id,
- s=>s.areas[0].actions[0].id=s.areas[0].actions[1].id,
- s=>s.areas[0].actions[0].title=' ',s=>s.areas[0].actions[0].due='bad',
- s=>s.areas[0].actions.slice(0,4).forEach(t=>t.focus=true),s=>s.reviews='bad'
- ];for(const bad of cases){const s=fresh();bad(s);assert.throws(()=>core.validate(s));}
- assert.doesNotThrow(()=>core.validate(fresh()));
-});
+const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+const C = require('../core.js');
+const ctx = { window: {} };
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../months/month-01.js'), 'utf8'), ctx);
+const plan = JSON.parse(JSON.stringify(ctx.window.MANDALA_BUILTIN));
+const fresh = () => JSON.parse(JSON.stringify(plan));
 
-test('cloud revision guards never silently overwrite another version',()=>{
- assert.equal(core.nextRevision(null,null),1);
- assert.equal(core.nextRevision(null,0),1);
- assert.equal(core.nextRevision(3,3),4);
- assert.throws(()=>core.nextRevision(3,null));
- assert.throws(()=>core.nextRevision(4,3));
- assert.throws(()=>core.nextRevision(null,3));
- assert.throws(()=>core.nextRevision('3',3));
+test('встроенный план проходит проверку', () => {
+  assert.doesNotThrow(() => C.validatePlan(fresh()));
+  assert.equal(plan.days.length, 30);
+  for (const d of plan.days) for (const t of d.tasks) assert.ok(t.min >= 5 && t.steps.length);
 });
-test('invalid calendar dates rejected',()=>{
- const s=fresh();s.goal.deadline='2027-02-31';assert.throws(()=>core.validate(s));
+test('плохие планы отклоняются', () => {
+  const cases = [p => p.days.pop(), p => p.version = 1, p => p.id = 'm2', p => p.days[0].tasks[0].cat = 'x',
+    p => p.days[3].tasks[0].id = p.days[0].tasks[0].id, p => p.days[0].tasks[0].min = 0, p => p.target = 0, p => delete p.days[5].focus];
+  for (const bad of cases) { const p = fresh(); bad(p); assert.throws(() => C.validatePlan(p)); }
+});
+test('расчёт месяца: задания, оплаты, воронка', () => {
+  const s = C.emptyState(), t0 = plan.days[0].tasks[0], t1 = plan.days[1].tasks[0];
+  s.months[plan.id] = { start: '2026-11-16', tasks: { [t0.id]: { done: true, at: '2026-11-16', note: 'ответ' }, [t1.id]: { done: true } }, notes: { worked: 'чаты' } };
+  s.payments.push({ id: 'a', date: '2026-11-17', product: plan.products[0].name, source: plan.sources[0], amount: 1499, note: '' },
+    { id: 'b', date: '2026-11-20', product: plan.products[1].name, source: plan.sources[1], amount: 4990, note: '' },
+    { id: 'c', date: '2026-11-21', product: plan.products[0].name, source: plan.sources[0], amount: -1499, note: '' },
+    { id: 'd', date: '2027-01-05', product: plan.products[0].name, source: plan.sources[0], amount: 999, note: '' });
+  s.funnel.push({ date: '2026-11-16', source: plan.sources[0], contacts: 10, answers: 3, trials: 1 });
+  C.validateState(s);
+  const st = C.monthStats(plan, s);
+  assert.equal(st.net, 4990); assert.equal(st.received, 6489); assert.equal(st.refunds, 1499);
+  assert.equal(st.done, 2); assert.equal(st.end, '2026-12-15');
+  assert.equal(st.days[4].balance, 6489); assert.equal(st.days[29].balance, 4990);
+  assert.deepEqual(st.funnel, { contacts: 10, answers: 3, trials: 1, payments: 2 });
+  assert.equal(st.minDone, t0.min + t1.min);
+  const r = C.buildReport(plan, s, [plan], '2026-12-15');
+  assert.equal(r.type, 'mandala-month-report'); assert.equal(r.days[0].tasks[0].answer, 'ответ');
+  assert.equal(r.payments.length, 3); assert.ok(r.nextPlanFormat.includes('mandala-month-plan'));
+  assert.equal(r.notes[C.NOTE_FIELDS[0][1]], 'чаты');
+});
+test('журнал упражнений', () => {
+  const s = C.emptyState(); const d1 = plan.days[0].tasks.find(t => t.ex), d5 = plan.days[4].tasks.find(t => t.ex);
+  s.months[plan.id] = { start: '2026-11-16', tasks: { [d1.id]: { sets: [['8', '12']] }, [d5.id]: { sets: [['', ''], ['10', '10']] } }, notes: {} };
+  const log = C.exerciseLog([plan], s);
+  assert.deepEqual(log['Жим гантелей лёжа на полу'], [{ date: '2026-11-16', kg: 8, reps: 12 }, { date: '2026-11-20', kg: 10, reps: 10 }]);
+});
+test('плохая резервная копия отклоняется', () => {
+  assert.throws(() => C.validateState({ version: 1 }));
+  const s = C.emptyState(); s.payments.push({ id: 'x', date: 'bad', product: 'a', source: 'b', amount: 1 });
+  assert.throws(() => C.validateState(s));
 });

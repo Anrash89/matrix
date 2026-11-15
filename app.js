@@ -1,637 +1,543 @@
-(function(){
-'use strict';
-const KEY='mandala.v1',BACKUP='mandala.backup.v1',CONFIG='mandala.firebase.v1';
-const $=s=>document.querySelector(s),clone=x=>JSON.parse(JSON.stringify(x)),e=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const C=MandalaCore,D=MandalaDaily,P=MandalaPlan,labels={todo:'Не начато',doing:'В работе',done:'Готово'};
-const colors=[['#f3e4db','#e4c5b3','#965b40'],['#e9eddf','#ced9b9','#63754c'],['#e5eced','#bfd1d5','#557880'],['#f3eadd','#e4cfae','#9d7d46'],['#e8eee6','#c5d7c0','#597956'],['#eee8e2','#d9c9bd','#8b705b'],['#e9e8ed','#cfccdb','#77708b'],['#f2e7e3','#e1c5bb','#9b6a5b']];
-let pendingState=null;
-let viewedDay=null, lastRenderedDate='', openSteps=new Set([0]);
-let state=clone(window.MANDALA_SEED),lastRaw=null,storageError='',view='today',mode=matchMedia('(max-width:760px)').matches?'areas':'full',selected=0,filterArea='',filterStatus='',search='',toastTimer,cloud=null,cloudMessage='',cloudBusy=false;
-try{lastRaw=localStorage.getItem(KEY);if(lastRaw)state=C.validate(JSON.parse(lastRaw));else{C.validate(state);lastRaw=JSON.stringify(state);localStorage.setItem(KEY,lastRaw);}}catch(err){storageError='Не удалось прочитать сохранение. Исходные данные не перезаписаны. Открой «Данные и облако».';}
-function toast(msg){$('#toast').textContent=msg;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
-function localDate(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
-function dateFmt(s){return s?new Date(s+'T12:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'short',year:'numeric'}):'Без срока';}
-function theme(i){return '--pale:'+colors[i][0]+';--tone:'+colors[i][1]+';--deep:'+colors[i][2];}
-function saveStatus(){const el=$('#save-state');el.classList.toggle('error',!!storageError);el.innerHTML='<i></i>'+e(storageError?'Ошибка сохранения — экспортируй данные':cloud&&cloud.auth.currentUser?'На устройстве · облако вручную':'Сохранено на устройстве');}
-function commit(next,{backup=true}={}){
- try{
-  C.validate(next);pendingState=next;
-  const now=localStorage.getItem(KEY);
-  if(now!==lastRaw){toast('Матрица изменилась в другой вкладке. Обнови страницу перед сохранением.');return false;}
-  if(storageError && now){toast('Сначала восстанови сохранение через раздел данных.');return false;}
-  if(now&&backup)localStorage.setItem(BACKUP,now);
-  next.updatedAt=new Date().toISOString();
-  const raw=JSON.stringify(next);localStorage.setItem(KEY,raw);lastRaw=raw;state=next;pendingState=null;storageError='';render();return true;
- }catch(err){storageError=err.message;saveStatus();toast('Не сохранено: '+err.message+'. Скачай резервную копию.');return false;}
-}
-function all(){return state.areas.flatMap((a,i)=>a.actions.map((t,j)=>({t,a,i,j})));}
-function mutate(fn){const next=clone(state);fn(next);return commit(next);}
-function render(){
- lastRenderedDate=localDate();
- const st=C.stats(state),g=state.goal;
- $('#goal-title').textContent=g.title;$('#goal-subtitle').textContent=g.description;$('#goal-date').textContent=dateFmt(g.deadline);
- const days=g.deadline?Math.ceil((new Date(g.deadline+'T00:00:00')-new Date(localDate()+'T00:00:00'))/86400000):null;
- $('#days-left').textContent=days===null?'свой ритм':days<0?'Пора пересмотреть горизонт':days===0?'День подведения итогов':'Осталось дней: '+days;
- $('#done-count').innerHTML=st.done+' <small>/ 64</small>';$('#doing-count').textContent=st.doing;$('#focus-count').innerHTML=st.focus+' <small>/ 3</small>';$('#total-bar').style.width=(st.done/64*100)+'%';
- $('#income').textContent=g.target?g.current.toLocaleString('ru-RU')+' / '+g.target.toLocaleString('ru-RU')+' ₽':'Задать цель →';
- $('#income-note').textContent=g.target?'факт / цель · редактируется вручную':'сумма пока не выбрана';
- document.querySelectorAll('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);if(b.classList.contains('nav'))b.setAttribute('aria-current',b.dataset.view===view?'page':'false');});
- const titles={today:['Рабочий месяц',''],analytics:['Динамика','Выручка, воронка и прогресс по заданиям'],pipeline:['Воронка','Итоги продаж по источникам'],reports:['Отчёты','Итоги текущего месяца и следующий план'],matrix:['Твоя большая цель.<span>По шагам.</span>','Собери то, что важно, в одну понятную картину.'],actions:['Действия.<span>Из намерения в результат.</span>','Все 64 шага: выбирай, уточняй, отмечай прогресс.'],focus:['Фокус недели.<span>Только главное.</span>','До трёх действий. Достаточно, чтобы двигаться вперёд.'],reviews:['Рефлексия.<span>Замечай движение.</span>','Что сработало, чему научился и какой шаг следующий.']};
- $('#page-title').innerHTML=titles[view][0];$('#page-description').textContent=titles[view][1];
- const breadcrumbs={today:'Рабочий месяц',analytics:'Динамика',pipeline:'Воронка',reports:'Отчёты',matrix:'Моя матрица',actions:'Все действия',focus:'Фокус недели',reviews:'Рефлексия'};
- $('#breadcrumb').textContent=breadcrumbs[view]+' / Личный план';
- document.body.dataset.screen=view;
- if(view==='today')renderToday();else if(view==='analytics')renderAnalytics();else if(view==='pipeline')renderPipeline();else if(view==='reports')renderReports();else if(view==='matrix')renderMatrix();else if(view==='reviews')renderReviews();else renderActions();
- saveStatus();
-}
-function money(value) {
- return value.toLocaleString('ru-RU') + ' ₽';
-}
-function ratio(value, target) {
- return Math.round(Math.min(1, Math.max(0, value / target)) * 100);
-}
-function metric(label, value, detail, accent = '') {
- return '<article class="dash-metric ' + accent + '"><span>' + label + '</span><strong>' +
-  e(value) + '</strong><small>' + e(detail) + '</small></article>';
-}
-function targetOf(month) {
- return month.plan?.target ?? P.firstTarget;
-}
-function heading(period, label) {
- return '<div class="panel-head"><div><span class="caption">' + e(period) +
-  '</span><h2>' + e(label) + '</h2></div></div>';
-}
+(function () {
+  'use strict';
+  const C = window.MandalaCore;
+  const KEY = 'mandala.v2';
+  const $ = (s, el = document) => el.querySelector(s);
+  const e = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const VIEWS = ['today', 'month', 'sales', 'sport', 'stats', 'data'];
+  const MOODS = ['плохо', 'так себе', 'нормально', 'хорошо', 'отлично'];
 
-function cashChart(stats, month, compact = false) {
- const elapsed = month.start ? Math.max(0, Math.min(30, P.offset(localDate(), month.start) + 1)) : 0;
- const points = stats.series.slice(0, elapsed);
- const max = Math.max(1, ...points.map(day => Math.abs(day.balance)));
- const hasData = points.some(day => day.net !== 0);
- const chart = stats.series.map((day, index) => {
-  const height = Math.max(2, Math.round(Math.abs(day.balance) / max * 100));
-  const label = 'День ' + day.day + ' · ' + money(day.balance);
-  return '<button type="button" class="cash-column' + (day.balance < 0 ? ' negative' : '') +
-    (index >= elapsed ? ' future' : '') + '" data-act="chart-point" data-i="' + index +
-   '" aria-label="' + e(label) + '" title="' + e(label) + '"' + (index >= elapsed ? ' disabled' : '') +
-   '><span style="height:' + height + '%"></span></button>';
- }).join('');
- return '<section class="dash-panel ' + (compact ? 'chart-compact' : '') + '">' +
-  heading('Поступления минус возвраты', 'Выручка по дням') +
-  '<div class="chart-values"><strong>' + money(stats.net) + '</strong><span id="chart-readout">' +
-  (hasData ? 'Нажми на столбик, чтобы увидеть сумму' : 'График заполнится после первой оплаты') + '</span></div>' +
-  '<div class="cash-chart" aria-label="Накопленная выручка за 30 дней">' + chart + '</div>' +
-  '<div class="chart-axis"><span>День 1</span><span>10</span><span>20</span><span>30</span></div></section>';
-}
+  /* ---------- Состояние ---------- */
+  let state = C.emptyState();
+  let storageError = '';
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) state = C.validateState(JSON.parse(raw));
+  } catch (err) { storageError = 'Сохранённые данные не прочитались: ' + err.message; }
 
-function funnelChart(stats, withLink = false) {
- const steps = [...P.stages, ['payments', 'Оплаты']];
- const max = Math.max(1, ...Object.values(stats.funnel));
- return '<section class="dash-panel">' + heading('За текущие 30 дней', 'Воронка продаж') +
-  '<div class="funnel-chart">' + steps.map(([key, label]) => '<div class="funnel-row"><span>' + label +
-  '</span><div class="meter-track"><i style="width:' + ratio(stats.funnel[key], max) + '%"></i></div><b>' +
-  stats.funnel[key] + '</b></div>').join('') + '</div>' +
-  (withLink ? '<button class="text-btn" data-view="pipeline">Внести цифры →</button>' : '') + '</section>';
-}
+  let plans = [];
+  const ui = { view: 'today', planId: '', day: 0, open: new Set(), picked: false, just: '' };
 
-function renderToday() {
- const month = P.stateOf(state);
- const today = localDate();
- const elapsed = month.start ? P.offset(today, month.start) : 0;
- const current = Math.min(29, Math.max(0, elapsed));
- const day = viewedDay ?? current;
- const progress = month.checks[day];
- const completed = P.completedCount(progress);
- const date = month.start ? P.addDays(month.start, day) : '';
- const editable = month.start && date <= today;
- const stats = P.totals(month, today);
- const target = targetOf(month);
- const title = month.plan?.title ?? 'Первые продажи';
- const phase = ['Поиск и первые демо', 'Проверка предложения', 'Пилоты и оплаты', 'Дожим и итоги'][Math.min(3, Math.floor(day / 7))];
- const tasks = (month.plan?.days ?? P.days)[day].map((task, slot) => {
-  const done = !!(progress & (1 << slot));
-  const open = openSteps.has(slot);
-  return '<article class="mission ' + (done ? 'done' : '') + '">' +
-   '<button class="mission-check" data-act="plan-toggle" data-i="' + day + '" data-j="' + slot +
-   '" aria-pressed="' + done + '" aria-label="' + e((done ? 'Вернуть: ' : 'Выполнено: ') + task.title) +
-   '"' + (editable ? '' : ' disabled') + '>' + (done ? '✓' : String(slot + 1).padStart(2, '0')) + '</button>' +
-   '<details data-slot="' + slot + '"' + (open ? ' open' : '') + '><summary><span class="task-category category-' + slot + '">' +
-   P.labels[slot] + '</span><span class="mission-title">' + e(task.title) + '</span><span class="details-hint" aria-hidden="true"></span></summary>' +
-   '<ol>' + task.steps.map(step => '<li>' + e(step) + '</li>').join('') +
-   '</ol><div class="definition"><strong>Готово, когда</strong><p>' + e(task.done) + '</p></div></details></article>';
- }).join('');
- const dayOptions = (month.plan?.days ?? P.days).map((_, index) => '<option value="' + index +
-  '"' + (index === day ? ' selected' : '') + '>День ' + (index + 1) +
-  (month.checks[index] ? ' · ' + P.completedCount(month.checks[index]) + '/5' : '') + '</option>').join('');
- const projects = D.data(state).projects.map(project => '<li><div><strong>' + e(project.title) +
-  '</strong><small>' + e(project.detail || 'Без описания') + '</small></div>' +
-  '<button class="btn small" data-act="project" data-id="' + e(project.id) + '" aria-label="' +
-  e('Настройки проекта ' + project.title) + '">Изменить</button></li>').join('');
- const period = month.start ? dateFmt(month.start) + ' — ' + dateFmt(P.addDays(month.start, 29)) : '30 дней с даты старта';
- const markText = !month.start ? 'Начни месяц, чтобы отмечать задачи' : !editable ? 'Этот день ещё не наступил' :
-  elapsed >= 30 ? 'Месяц завершён. Подведи итоги в отчёте.' : 'Выполнено ' + completed + ' из 5';
- $('#view-content').innerHTML =
-  '<div class="dashboard-hero"><div><div class="cycle-label"><i></i>' + e(period) +
-  '</div><h1>' + e(title) + '</h1><p>Пять заданий на день. Цель месяца — ' + money(target) + ' поступлений после возвратов.</p></div>' +
-  '<div class="hero-actions">' + (month.start ? '<button class="btn primary" data-act="payment">＋ Записать оплату</button>' :
-    '<button class="btn primary" data-act="plan-start">Начать месяц</button>') +
-  '<button class="btn" data-view="reports">Отчёт месяца</button></div></div>' +
-  '<div class="dash-metrics">' + metric('Выручка месяца', money(stats.net), 'Из ' + money(target) + ' · ' + ratio(stats.net, target) + '%', 'metric-main') +
-  metric('Первый миллион', money(P.lifetime(state, today)), 'Накопительно по всем сервисам') +
-  metric('Задачи месяца', stats.done + ' / 150', 'Отмечено в календаре') +
-  metric('Проведено демо', String(stats.funnel.demos), 'По журналу воронки') + '</div>' +
-  '<div class="month-layout"><section><div class="mission-header"><div><div class="caption">' +
-  e((date ? dateFmt(date) + ' · ' : '') + (month.plan ? 'План месяца' : phase)) + '</div><h2>День ' + (day + 1) +
-  '<small> / 30</small></h2></div><div class="day-picker">' +
-  '<button class="btn small" data-act="plan-jump" data-i="' + (day - 1) + '" aria-label="Предыдущий день"' + (day === 0 ? ' disabled' : '') + '>←</button>' +
-  '<select id="plan-day" aria-label="День плана">' + dayOptions + '</select>' +
-  '<button class="btn small" data-act="plan-jump" data-i="' + (day + 1) + '" aria-label="Следующий день"' + (day === 29 ? ' disabled' : '') + '>→</button>' +
-  (day !== current ? '<button class="btn small" data-act="plan-today">Сегодня</button>' : '') + '</div></div>' +
-  '<p class="day-status">' + e(markText) + '</p><div class="day-strip" aria-label="Календарь заданий">' +
-  month.checks.map((mask, index) => '<button data-act="plan-jump" data-i="' + index +
-    '" class="' + (day === index ? 'selected ' : '') + (mask === 31 ? 'finished' : mask ? 'partial' : '') +
-    '" aria-label="День ' + (index + 1) + ', отмечено ' + P.completedCount(mask) + ' из 5" aria-current="' +
-    (day === index ? 'true' : 'false') + '">' + (index + 1) + '</button>').join('') +
-  '</div><div class="mission-list">' + tasks + '</div></section>' +
-  '<aside class="dashboard-side">' + cashChart(stats, month, true) + funnelChart(stats, true) +
-  '<section class="dash-panel">' + heading('Открытые источники', 'Где искать клиентов') +
-  '<p>Запросы для Telegram и 2ГИС, отбор компаний, тексты для первого сообщения и после демо.</p>' +
-  '<div class="source-links"><a class="btn small" href="SALES.html">Поиск и шаблоны →</a>' +
-  '<button class="btn small" data-act="payments">Журнал оплат</button></div></section>' +
-  '<section class="dash-panel">' + heading('SellerCtrl, FLRAD и новые идеи', 'Мои проекты') +
-  '<ul class="project-list">' + projects + '</ul><button class="btn small" data-act="project">＋ Добавить проект</button></section></aside></div>';
-}
-
-function renderAnalytics() {
- const month = P.stateOf(state);
- const stats = P.totals(month, localDate());
- const byWeek = [0, 1, 2, 3, 4].map(week => stats.series.slice(week * 7, week * 7 + 7).reduce((sum, day) => sum + day.done, 0));
- const table = Object.entries(stats.bySource).map(([source, item]) => '<tr><th>' + source + '</th>' +
-  [...P.stages.map(([name]) => item[name]), item.payments, money(item.net)].map(value => '<td>' + value + '</td>').join('') + '</tr>').join('');
- $('#view-content').innerHTML = '<div class="dash-metrics">' +
-  metric('Фактически получено', money(stats.received), 'Положительные платежи') +
-  metric('Возвраты', money(stats.refunds), 'Вычтены из выручки') +
-  metric('После возвратов', money(stats.net), 'До расходов и налогов', 'metric-main') +
-  metric('Средний платёж', stats.funnel.payments ? money(Math.round(stats.received / stats.funnel.payments)) : '—', 'По поступившим платежам') +
-  '</div><div class="analytics-grid">' + cashChart(stats, month) + funnelChart(stats, true) +
-  '<section class="dash-panel">' + heading('Отметки по неделям', 'Выполнение плана') +
-  '<div class="funnel-chart">' + byWeek.map((done, week) => {
-   const max = (week === 4 ? 2 : 7) * 5;
-   return '<div class="funnel-row"><span>' + (week === 4 ? 'Дни 29–30' : 'Неделя ' + (week + 1)) +
-    '</span><div class="meter-track"><i style="width:' + ratio(done, max) + '%"></i></div><b>' + done + '/' + max + '</b></div>';
-  }).join('') + '</div></section>' +
-  '<section class="dash-panel">' + heading('После возвратов', 'Выручка по сервисам') +
-  '<ul class="project-list">' + Object.entries(stats.byProduct).map(([key, value]) =>
-   '<li><strong>' + key + '</strong><span>' + money(value) + '</span></li>').join('') + '</ul>' +
-  '<button class="btn small" data-act="payments">Журнал оплат</button></section></div>' +
-  '<section class="dash-panel table-panel">' + heading('Фактические показатели', 'Результат по источникам') +
-  '<div class="table-scroll"><table><thead><tr><th>Источник</th>' +
-  [...P.stages.map(([, label]) => label), 'Оплаты', 'Выручка'].map(label => '<th>' + label + '</th>').join('') +
-  '</tr></thead><tbody>' + table + '</tbody></table></div></section>';
-}
-
-function editDateMax(month) {
- const end = P.addDays(month.start, 29);
- return end < localDate() ? end : localDate();
-}
-
-function startPlan() {
- if (P.stateOf(state).start) return;
- const earliest = P.nextStart(state);
- const start = earliest > localDate() ? earliest : localDate();
- showDialog('<h2 id="dialog-title">Начать месяц</h2><p>Период длится 30 дней с выбранной даты.</p>' +
-  '<form id="start-form"><label for="cycle-start">Первый день</label><input id="cycle-start" name="start" type="date" required value="' +
-  start + '"' + (earliest ? ' min="' + earliest + '"' : '') + '>' + buttons() + '</form>', 'ПЕРВЫЕ ПРОДАЖИ');
- $('#start-form').onsubmit = event => {
-  event.preventDefault();
-  const startDate = new FormData(event.target).get('start');
-  if (!P.validDate(startDate) || (earliest && startDate < earliest)) return;
-  const next = clone(state);
-  next.month = { ...P.stateOf(next), start: startDate };
-  viewedDay = null;
-  openSteps = new Set([0]);
-  submit(next);
- };
-}
-
-function sourceChoices(value) {
- return P.sources.map(source => '<option' + (value === source ? ' selected' : '') + '>' + source + '</option>').join('');
-}
-
-function renderPipeline() {
- const month = P.stateOf(state);
- const stats = P.totals(month, localDate());
- const rows = month.activity.slice().sort((a, b) => b.date.localeCompare(a.date) || a.source.localeCompare(b.source))
-  .map(entry => '<tr><th>' + e(dateFmt(entry.date)) + '</th><td>' + entry.source + '</td>' +
-  P.stages.map(([key]) => '<td>' + entry[key] + '</td>').join('') +
-  '<td><button class="btn small" data-act="activity" data-date="' + entry.date + '" data-source="' +
-  e(entry.source) + '">Изменить</button></td></tr>').join('');
- $('#view-content').innerHTML = '<div class="analytics-grid">' + funnelChart(stats) +
-  '<section class="dash-panel">' + heading('Одна строка на канал и день', 'Записывай итог работы') +
-  '<p>Считай новые адресные обращения, содержательные ответы, проведённые демо и отправленные предложения. Разные этапы могут относиться к разным людям и датам. Оплаты берутся из журнала денег.</p>' +
-  '<button class="btn primary" data-act="activity">＋ Записать итоги дня</button></section></div>' +
-  '<section class="dash-panel table-panel">' + heading('С разбивкой по источникам', 'Журнал воронки') +
-  (rows ? '<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th>' +
-   P.stages.map(([, label]) => '<th>' + label + '</th>').join('') + '<th></th></tr></thead><tbody>' +
-   rows + '</tbody></table></div>' : '<p>Записей пока нет. Внеси цифры после первого рабочего блока.</p>') + '</section>';
-}
-
-function activityEditor(date, source) {
- const month = P.stateOf(state);
- if (!month.start) { startPlan(); return; }
- const max = editDateMax(month);
- if (month.start > max) { toast('Месяц ещё не начался.'); return; }
- showDialog('<h2 id="dialog-title">Итоги по каналу</h2><p>Если строка за эту дату уже есть, её значения подставятся при выборе канала.</p>' +
-  '<form id="activity-form"><div class="form-row"><div><label for="activity-date">Дата</label><input id="activity-date" name="date" type="date"' +
-  ' required min="' + month.start + '" max="' + max + '" value="' + (date ?? max) + '"></div>' +
-  '<div><label for="activity-source">Источник</label><select id="activity-source" name="source">' +
-  sourceChoices(source) + '</select></div></div><div class="form-row">' +
-  P.stages.map(([key, label]) => '<div><label for="activity-' + key + '">' + label + '</label>' +
-   '<input id="activity-' + key + '" name="' + key + '" type="number" min="0" max="1000" step="1" required value="0"></div>').join('') +
-  '</div>' + buttons() + '</form>', 'ВОРОНКА');
- const form = $('#activity-form');
- function loadEntry() {
-  const item = month.activity.find(entry => entry.date === form.elements.date.value &&
-    entry.source === form.elements.source.value);
-  for (const [key] of P.stages) form.elements[key].value = item?.[key] ?? 0;
- }
- form.elements.date.onchange = loadEntry;
- form.elements.source.onchange = loadEntry;
- loadEntry();
- form.onsubmit = event => {
-  event.preventDefault();
-  const data = new FormData(form);
-  const entry = { date: data.get('date'), source: data.get('source') };
-  for (const [key] of P.stages) entry[key] = Number(data.get(key));
-  const next = clone(state);
-  next.month.activity = next.month.activity.filter(item => item.date !== entry.date || item.source !== entry.source);
-  if (P.stages.some(([key]) => entry[key] !== 0)) next.month.activity.push(entry);
-  submit(next);
- };
-}
-
-function paymentEditor(previousId = '') {
- const month = P.stateOf(state);
- if (!month.start) { startPlan(); return; }
- const max = editDateMax(month);
- if (month.start > max) { toast('Месяц ещё не начался.'); return; }
- const previous = month.payments.find(item => item.id === previousId);
- showDialog('<h2 id="dialog-title">' + (previous ? 'Изменить запись' : 'Записать оплату') +
-  '</h2><p>Запиши проведённый платёж или возврат. Для пакета с подпиской внеси сумму один раз.</p>' +
-  '<form id="payment-form"><div class="form-row"><div><label for="pay-date">Дата</label><input id="pay-date" name="date" type="date" required min="' +
-  month.start + '" max="' + max + '" value="' + (previous?.date ?? max) + '"></div>' +
-  '<div><label for="pay-product">Сервис</label><select id="pay-product" name="product">' +
-  P.products.map(product => '<option' + (product === previous?.product ? ' selected' : '') + '>' + product + '</option>').join('') +
-  '</select></div><div><label for="pay-amount">Сумма, ₽</label><input id="pay-amount" type="number" min="1" max="100000000" step="1" name="amount" required value="' +
-  (previous ? Math.abs(previous.amount) : '') + '"></div><div><label for="pay-kind">Операция</label>' +
-  '<select id="pay-kind" name="kind"><option value="paid">Поступление</option><option value="refund"' +
-  (previous?.amount < 0 ? ' selected' : '') + '>Возврат</option></select></div></div>' +
-  '<label for="pay-source">Источник клиента</label><select id="pay-source" name="source">' +
-  sourceChoices(previous?.source ?? 'Другое') + '</select>' +
-  '<label for="pay-note">Пометка, например «запуск»</label><input id="pay-note" name="note" maxlength="100" value="' +
-  e(previous?.note) + '">' + buttons() + '</form>', 'ОПЛАТЫ');
- $('#payment-form').onsubmit = event => {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  const next = clone(state);
-  const payment = {
-   id: previous?.id ?? (crypto.randomUUID ? crypto.randomUUID() : 'payment-' + Date.now()),
-   date: form.get('date'), product: form.get('product'), source: form.get('source'),
-   amount: Number(form.get('amount')) * (form.get('kind') === 'refund' ? -1 : 1),
-   note: form.get('note').trim(),
-  };
-  const index = next.month.payments.findIndex(item => item.id === payment.id);
-  if (index === -1) next.month.payments.push(payment);
-  else next.month.payments[index] = payment;
-  submit(next);
- };
-}
-
-function paymentHistory() {
- const month = P.stateOf(state);
- const stats = P.totals(month, localDate());
- const rows = month.payments.slice().reverse().sort((a, b) => b.date.localeCompare(a.date)).map(item =>
-  '<li><div><strong>' + money(item.amount) + ' · ' + e(item.product) + '</strong><small>' +
-  e(dateFmt(item.date)) + ' · ' + e(item.source) + (item.note ? ' · ' + e(item.note) : '') + '</small></div>' +
-  '<div class="ledger-row-actions"><button class="btn small" data-act="payment" data-id="' + e(item.id) +
-  '">Изменить</button><button class="btn small danger" data-act="payment-delete" data-id="' + e(item.id) + '">Удалить</button></div></li>'
- ).join('');
- showDialog('<h2 id="dialog-title">Журнал оплат</h2><p>Получено ' + money(stats.received) +
-  ' · возвращено ' + money(stats.refunds) + ' · после возвратов ' + money(stats.net) + '.</p>' +
-  (rows ? '<ul class="project-list ledger-rows">' + rows + '</ul>' : '<p>Записей пока нет.</p>') +
-  '<div class="dialog-actions"><button class="btn primary" data-act="' + (month.start ? 'payment' : 'plan-start') + '">' +
-  (month.start ? '＋ Записать оплату' : 'Начать месяц') + '</button></div>', 'ДЕНЬГИ');
-}
-
-function renderReports() {
- const month = P.stateOf(state);
- const archive = (state.monthHistory ?? []).slice().reverse().map(entry =>
-  '<li><div><strong>' + e(entry.title) + '</strong><small>' + e(dateFmt(entry.start)) + ' — ' + e(dateFmt(entry.end)) +
-  '</small></div><div>' + money(entry.net) + ' · ' + entry.done + '/150</div></li>').join('');
- $('#view-content').innerHTML = '<div class="analytics-grid reports-grid"><section class="dash-panel">' +
-  heading('Передай в чат для пересмотра плана', 'Отчёт за месяц') +
-  '<p>Файл содержит задачи и отметки, воронку, суммы по источникам и сервисам, а также заметки ниже. Пометки к платежам не входят в отчёт.</p>' +
-  '<form id="report-form">' + P.reportFields.map(([name, label]) => field(name, label, month.notes[name] ?? '', 900, true)).join('') +
-  '<div class="report-actions"><button class="btn" type="submit">Сохранить заметки</button>' +
-  '<button class="btn primary" type="button" data-act="report-download">↓ Скачать отчёт JSON</button></div></form></section>' +
-  '<section><div class="dash-panel">' + heading('Каждый цикл — 30 дней', 'Следующий месяц') +
-  '<ol class="next-month"><li>Скачай отчёт и пришли его в чат. Напиши, что хочешь изменить.</li>' +
-  '<li>Попроси новый план «Мандалы» в формате mandala-month-plan JSON.</li>' +
-  '<li>После завершения цикла загрузи файл. Текущий итог уйдёт в архив.</li></ol>' +
-  '<button class="btn primary" data-act="month-import">↑ Загрузить следующий план</button>' +
-  '<p class="small-note">Чтобы сохранить все старые записи, перед сменой месяца скачай отчёт или полную резервную копию.</p></div>' +
-  '<div class="dash-panel archive-panel">' + heading('Закрытые циклы', 'Архив месяцев') +
-  (archive ? '<ul class="project-list">' + archive + '</ul>' : '<p>Первый итог появится здесь после смены месяца.</p>') + '</div></section></div>';
- $('#report-form').onsubmit = event => {
-  event.preventDefault();
-  if (saveReportNotes()) toast('Заметки сохранены');
- };
-}
-
-function saveReportNotes() {
- const form = $('#report-form');
- if (!form) return true;
- const values = new FormData(form);
- const notes = Object.fromEntries(P.reportFields.map(([key]) => [key, values.get(key).trim()]));
- if (P.reportFields.every(([key]) => (P.stateOf(state).notes[key] ?? '') === notes[key])) return true;
- return mutate(next => {
-  next.month = P.stateOf(next);
-  next.month.notes = notes;
- });
-}
-
-function downloadReport() {
- if (!saveReportNotes()) return;
- const projects = D.data(state).projects.map(({ title, detail, active }) => ({ title, detail, active }));
- const report = P.buildReport(state, localDate(), projects);
- exportData(report, 'mandala-report-' + (report.month.start || localDate()) + '.json', 'Отчёт подготовлен');
-}
-
-function previewNewMonth(plan) {
- const month = P.stateOf(state);
- const earliest = P.nextStart(state);
- if (month.start && earliest > localDate()) {
-  toast('Новый цикл можно установить с ' + dateFmt(earliest) + '. Текущий месяц ещё идёт.');
-  return;
- }
- if ((state.monthHistory ?? []).length >= 36) {
-  toast('Архив достиг 36 месяцев. Скачай полную резервную копию.');
-  return;
- }
- const start = earliest > localDate() ? earliest : localDate();
- showDialog('<h2 id="dialog-title">' + e(plan.title) +
-  '</h2><p>30 дней · 150 заданий · цель ' + money(plan.target) +
-  '. При установке итог предыдущего месяца будет сохранён в архиве.</p>' +
-  '<form id="new-month-form"><label for="next-start">Когда начать</label><input id="next-start" name="start" type="date" required value="' +
-  start + '"' + (earliest ? ' min="' + earliest + '"' : '') + '>' + buttons() + '</form>', 'НОВЫЙ ПЛАН');
- $('#new-month-form').onsubmit = event => {
-  event.preventDefault();
-  const date = new FormData(event.target).get('start');
-  if (!P.validDate(date) || (earliest && date < earliest)) return;
-  const next = clone(state);
-  if (month.start) {
-   const stats = P.totals(month, localDate());
-   next.monthHistory = [...(state.monthHistory ?? []), { start: month.start, end: P.addDays(month.start, 29),
-    title: month.plan?.title ?? 'Первые продажи', target: targetOf(month), net: stats.net, done: stats.done }];
+  function rebuildPlans(remote = []) {
+    const map = new Map();
+    for (const p of [window.MANDALA_BUILTIN, ...state.plans, ...remote]) {
+      try { map.set(C.validatePlan(p).id, p); } catch (err) { console.warn(err.message); }
+    }
+    plans = [...map.values()].sort((a, b) => a.number - b.number);
   }
-  next.month = { start: date, checks: Array(30).fill(0), payments: [], activity: [], notes: {}, plan };
-  viewedDay = null;
-  openSteps = new Set([0]);
-  if (commit(next)) {
-   $('#editor').close();
-   view = 'today';
-   render();
-   toast('Следующий план загружен');
+  rebuildPlans();
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); storageError = ''; return true; }
+    catch { storageError = 'Не удалось сохранить в браузере. Скачай резервную копию в разделе «Данные».'; toast(storageError); return false; }
   }
- };
-}
+  let saveTimer;
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(save, 400); };
 
-function editProject(id) {
- const daily = D.data(state);
- const existing = daily.projects.find(project => project.id === id);
- if (!existing && daily.projects.length >= 30) {
-  toast('Достигнут лимит в 30 проектов. Можно переиспользовать карточку старого проекта.');
-  return;
- }
- const project = existing ?? { title: '', detail: '', area: '', active: true };
- const areaOptions = state.areas.map(area => '<option value="' + e(area.id) + '"' +
-  (project.area === area.id ? ' selected' : '') + '>' + e(area.title) + '</option>').join('');
- showDialog('<h2 id="dialog-title">' + (existing ? 'Настройки проекта' : 'Новый проект') +
-  '</h2><form id="project-form">' + field('title', 'Название', project.title, 80) +
-  field('detail', 'Для кого сервис и какую проблему решает', project.detail, 240, true) +
-  '<label for="f-area">Связь с матрицей</label><select name="area" id="f-area"><option value="">Без привязки</option>' +
-  areaOptions + '</select><label class="check-label"><input type="checkbox" name="active"' +
-  (project.active ? ' checked' : '') + '> Активный проект</label>' +
-  '' +
-  buttons() + '</form>', 'ПРОЕКТЫ');
- $('#project-form').onsubmit = ev => {
-  ev.preventDefault();
-  const form = new FormData(ev.target);
-  const next = clone(state);
-  next.daily = D.data(next);
-  const record = {
-   id: existing?.id ?? (crypto.randomUUID ? crypto.randomUUID() : 'project-' + Date.now()),
-   title: form.get('title').trim(),
-   detail: form.get('detail').trim(),
-   area: form.get('area'),
-   active: form.has('active'),
-  };
-  const pos = next.daily.projects.findIndex(entry => entry.id === record.id);
-  if (pos === -1) next.daily.projects.push(record);
-  else next.daily.projects[pos] = record;
-  submit(next);
- };
-}
+  /* ---------- Даты и формат ---------- */
+  const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const dateLong = s => new Date(s + 'T12:00:00').toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+  const dateShort = s => new Date(s + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace('.', '');
+  const money = n => Math.round(n).toLocaleString('ru-RU') + ' ₽';
+  const mins = m => m < 60 ? m + ' мин' : Math.floor(m / 60) + ' ч' + (m % 60 ? ' ' + (m % 60) + ' мин' : '');
+  const plural = (n, a, b, c) => { const x = Math.abs(n) % 100, y = x % 10; return n + ' ' + (x > 10 && x < 20 ? c : y === 1 ? a : y >= 2 && y <= 4 ? b : c); };
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
-function cell(c,large){
- if(c.type==='goal')return '<button class="cell goal-cell" data-act="goal" title="'+e(state.goal.title)+'">'+e(state.goal.title)+'</button>';
- const a=state.areas[c.area];
- if(c.type==='area')return '<button class="cell area-cell" style="'+theme(c.area)+'" data-act="'+(large?'edit-area':'area')+'" data-i="'+c.area+'" title="Открыть направление '+e(a.title)+'">'+e(a.title)+'</button>';
- const t=a.actions[c.action];
- return '<button class="cell '+t.status+(t.focus?' focused':'')+'" data-act="task" data-i="'+c.area+'" data-j="'+c.action+'" title="'+e(t.title+' · '+labels[t.status])+'">'+e(t.title)+'</button>';
-}
-function fullGrid(){return '<div class="matrix" aria-label="Матрица Мандалы 9 на 9">'+C.cells(state).map((block,b)=>'<div class="block '+(b===4?'central':'')+'" style="'+(b===4?'':theme(C.positions.indexOf(b)))+'">'+block.map(c=>cell(c)).join('')+'</div>').join('')+'</div>';}
-function renderMatrix(){
- const a=state.areas[selected],done=a.actions.filter(t=>t.status==='done').length;
- let content='';
- if(mode==='full')content='<p class="mobile-hint">Прокручивай матрицу вбок или выбери «Направления».</p><div class="matrix-shell">'+fullGrid()+'<div class="matrix-caption"><span>Нажми на ячейку, чтобы раскрыть или изменить её</span><span class="legend"><span>✓ готово</span><span>━ в работе</span><span>• фокус</span></span></div></div>';
- else if(mode==='areas')content='<div class="areas-grid">'+state.areas.map((a,i)=>'<button class="area-card" style="'+theme(i)+'" data-act="area" data-i="'+i+'"><span class="area-num">0'+(i+1)+' / НАПРАВЛЕНИЕ</span><h3>'+e(a.title)+'</h3><p>'+e(a.tagline)+'</p><small>'+a.actions.filter(t=>t.status==='done').length+' из 8 шагов →</small></button>').join('')+'</div>';
- else content='<div class="direction-header"><h3>'+e(a.title)+'</h3><button class="btn small" data-act="edit-area" data-i="'+selected+'">✎ Изменить</button></div><div class="matrix-shell"><div class="focus-matrix" style="'+theme(selected)+'">'+Array.from({length:9},(_,p)=>cell(p===4?{type:'area',area:selected}:{type:'action',area:selected,action:C.positions.indexOf(p)},true)).join('')+'</div></div>';
- const side='<aside class="matrix-aside"><div class="side-card"><span class="eyebrow">ВЫБРАННОЕ НАПРАВЛЕНИЕ · 0'+(selected+1)+'</span><h3>'+e(a.tagline)+'</h3><p>'+e(a.description)+'</p><button class="btn" data-act="area" data-i="'+selected+'">Открыть '+e(a.title)+' →</button><div class="mini-progress"><span>Прогресс направления</span><span>'+done+' / 8</span></div><div class="progress-track"><i style="width:'+done/8*100+'%"></i></div></div><div class="side-card tip"><div class="tip-icon">✳</div><span class="eyebrow">МАЛЕНЬКИЙ ШАГ СЕГОДНЯ</span><h3>Не нужно делать<br>всё одновременно.</h3><p>Выбери три действия на неделю. Для каждого определи ближайший понятный результат.</p><button class="text-btn" data-view="actions">Выбрать фокус →</button></div><p class="draft-note">Это твой стартовый черновик. Перепиши шаги под себя и задай измеримую цель дохода.</p></aside>';
- $('#view-content').innerHTML='<div class="section-bar"><div><h3>Карта твоего движения <small>1 цель · 8 направлений</small></h3></div><div class="segmented" aria-label="Вид матрицы"><button data-mode="full" class="'+(mode==='full'?'active':'')+'">Матрица 9×9</button><button data-mode="areas" class="'+(mode==='areas'?'active':'')+'">Направления</button></div></div>'+(mode==='areas'?content:'<div class="matrix-layout"><div>'+content+'</div>'+side+'</div>');
-}
-function taskRow({t,a,i,j}){
- const overdue=t.due&&t.due<localDate()&&t.status!=='done';
- return '<div class="task-row '+(t.status==='done'?'is-done':'')+'"><button class="task-check '+(t.status==='done'?'checked':'')+'" data-act="toggle" data-i="'+i+'" data-j="'+j+'" aria-label="'+e((t.status==='done'?'Вернуть в работу: ':'Завершить: ')+t.title)+'" aria-pressed="'+(t.status==='done')+'">'+(t.status==='done'?'✓':'')+'</button><button class="task-body" data-act="task" data-i="'+i+'" data-j="'+j+'"><strong>'+e(t.title)+'</strong><small>'+e(a.title)+(t.due?' · '+dateFmt(t.due):'')+(overdue?' · Срок прошёл':'')+'</small></button><span class="badge '+(overdue?'overdue':t.status)+'">'+labels[t.status]+'</span><button class="star-btn '+(t.focus?'selected':'')+'" data-act="focus-toggle" data-i="'+i+'" data-j="'+j+'" aria-pressed="'+t.focus+'" aria-label="'+e((t.focus?'Убрать из фокуса: ':'Добавить в фокус: ')+t.title)+'">'+(t.focus?'★':'☆')+'</button></div>';
-}
-function renderActions(){
- const isFocus=view==='focus';
- $('#view-content').innerHTML='<div class="section-bar"><h3>'+(isFocus?'На этой неделе':'Все действия')+'</h3>'+(isFocus?'<button class="btn small" data-view="actions">Выбрать действия →</button>':'<span class="eyebrow">ЗВЁЗДОЧКА → ФОКУС НЕДЕЛИ</span>')+'</div>'+(!isFocus?'<div class="filter-row"><input id="search" type="search" placeholder="Найти действие…" aria-label="Поиск действий" value="'+e(search)+'"><select id="area-filter" aria-label="Фильтр направлений"><option value="">Все направления</option>'+state.areas.map((a,i)=>'<option value="'+i+'" '+(String(i)===filterArea?'selected':'')+'>'+e(a.title)+'</option>').join('')+'</select><select id="status-filter" aria-label="Фильтр статуса"><option value="">Любой статус</option>'+Object.entries(labels).map(([v,l])=>'<option value="'+v+'" '+(v===filterStatus?'selected':'')+'>'+l+'</option>').join('')+'</select></div>':'')+'<div class="task-list" id="tasks"></div>';
- renderTaskList();
-}
-function renderTaskList(){
- const isFocus=view==='focus',rows=all().filter(({t,i})=>isFocus?t.focus:(!filterArea||String(i)===filterArea)&&(!filterStatus||t.status===filterStatus)&&t.title.toLowerCase().includes(search.toLowerCase()));
- $('#tasks').innerHTML=rows.length?rows.map(taskRow).join(''):'<div class="empty-state"><span class="goal-symbol">◎</span><h3>'+(isFocus?'Освободи место для главного':'Ничего не найдено')+'</h3><p>'+(isFocus?'Отметь звёздочкой до трёх действий в списке. Они появятся здесь — твой небольшой план на ближайшую неделю.':'Попробуй другой запрос или убери фильтры.')+'</p>'+(isFocus?'<button class="btn primary" data-view="actions">Выбрать фокус недели</button>':'')+'</div>';
-}
-function renderReviews(){
- $('#view-content').innerHTML='<div class="section-bar"><h3>Твои еженедельные итоги</h3><button class="btn primary" data-act="review">＋ Записать итог</button></div>'+(state.reviews.length?'<div class="review-grid">'+state.reviews.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(r=>'<article class="review-card"><h3>'+dateFmt(r.date)+'</h3><h4>Что получилось</h4><p>'+e(r.win)+'</p><h4>Что понял</h4><p>'+e(r.lesson)+'</p><h4>Следующий шаг</h4><p>'+e(r.next)+'</p><button class="text-btn" data-act="review" data-id="'+e(r.id)+'">Редактировать</button><button class="text-btn" data-act="delete-review" data-id="'+e(r.id)+'">Удалить</button></article>').join('')+'</div>':'<div class="empty-state"><span class="goal-symbol">◷</span><h3>Пять минут для себя</h3><p>В конце недели запиши одну победу, один вывод и следующий шаг. Так ты увидишь изменения, которые легко не заметить.</p><button class="btn" data-act="review">Записать первый итог</button></div>');
-}
-function showDialog(html,kicker){$('#dialog-content').innerHTML=html;$('#dialog-kicker').textContent=kicker||'ТВОЙ СЛЕДУЮЩИЙ ШАГ';if(!$('#editor').open)$('#editor').showModal();}
-function buttons(){return '<div class="dialog-actions"><button type="button" class="btn" data-act="close">Отмена</button><button class="btn primary" type="submit">Сохранить изменения</button></div><p id="form-error" class="error" role="alert"></p>';}
-function field(name,label,value,max,textarea){return '<label for="f-'+name+'">'+label+'</label>'+(textarea?'<textarea id="f-'+name+'" name="'+name+'" maxlength="'+max+'">'+e(value)+'</textarea>':'<input id="f-'+name+'" name="'+name+'" maxlength="'+max+'" value="'+e(value)+'" required>');}
-function goalEditor(){
- const g=state.goal;showDialog('<h2 id="dialog-title">Главная цель</h2><p>Сформулируй результат, который можно проверить.</p><form id="goal-form">'+field('title','Формулировка цели',g.title,180)+field('description','Зачем это тебе',g.description,2000,true)+'<label for="f-deadline">Дата подведения итогов</label><input id="f-deadline" type="date" name="deadline" value="'+e(g.deadline)+'"><div class="form-row"><div><label for="f-target">Цель дохода, ₽ / месяц</label><input id="f-target" type="number" min="0" max="1000000000000" step="1" name="target" value="'+g.target+'"></div><div><label for="f-current">Текущий доход, ₽ / месяц</label><input id="f-current" type="number" min="0" max="1000000000000" step="1" name="current" value="'+g.current+'"></div></div><p class="small-note">0 в поле цели — сумма ещё не выбрана. Показатели вводятся вручную.</p>'+field('notes','Критерии успеха и заметки',g.notes,5000,true)+buttons()+'</form>','ЦЕНТР МАТРИЦЫ');
- $('#goal-form').onsubmit=ev=>{ev.preventDefault();const f=new FormData(ev.target),next=clone(state);next.goal={title:f.get('title').trim(),description:f.get('description').trim(),deadline:f.get('deadline'),target:Number(f.get('target')),current:Number(f.get('current')),notes:f.get('notes').trim()};submit(next);};
-}
-function taskEditor(i,j){
- const t=state.areas[i].actions[j];showDialog('<h2 id="dialog-title">Один конкретный шаг</h2><p>'+e(state.areas[i].title)+' · Действие '+(j+1)+' из 8</p><form id="task-form">'+field('title','Что сделать',t.title,180)+'<div class="form-row"><div><label for="f-status">Статус</label><select id="f-status" name="status">'+Object.entries(labels).map(([v,l])=>'<option value="'+v+'" '+(t.status===v?'selected':'')+'>'+l+'</option>').join('')+'</select></div><div><label for="f-due">Срок, если нужен</label><input id="f-due" name="due" type="date" value="'+e(t.due)+'"></div></div>'+field('notes','Как поймёшь, что готово? Заметки и следующий шаг',t.notes,5000,true)+'<label class="check-label"><input type="checkbox" name="focus" '+(t.focus?'checked':'')+'> Включить в фокус недели (до 3 действий)</label>'+buttons()+'</form>');
- $('#task-form').onsubmit=ev=>{ev.preventDefault();const f=new FormData(ev.target),next=clone(state);Object.assign(next.areas[i].actions[j],{title:f.get('title').trim(),status:f.get('status'),due:f.get('due'),notes:f.get('notes').trim(),focus:f.has('focus')});submit(next);};
-}
-function areaEditor(i){const a=state.areas[i];showDialog('<h2 id="dialog-title">Направление '+(i+1)+'</h2><form id="area-form">'+field('title','Название',a.title,80)+field('tagline','Главный результат направления',a.tagline,150)+field('description','Почему это важно',a.description,2000,true)+buttons()+'</form>','ОДНА ИЗ ВОСЬМИ ОПОР');$('#area-form').onsubmit=ev=>{ev.preventDefault();const f=new FormData(ev.target),next=clone(state);for(const k of ['title','tagline','description'])next.areas[i][k]=f.get(k).trim();submit(next);};}
-function reviewEditor(id){
- const r=state.reviews.find(x=>x.id===id)||{id:crypto.randomUUID?crypto.randomUUID():String(Date.now()),date:localDate(),win:'',lesson:'',next:''};showDialog('<h2 id="dialog-title">Оглянуться на неделю</h2><form id="review-form"><label for="f-date">Дата</label><input id="f-date" name="date" type="date" required value="'+e(r.date)+'">'+field('win','Что получилось?',r.win,3000,true)+field('lesson','Что понял? Что мешало?',r.lesson,3000,true)+field('next','Что сделаешь дальше?',r.next,3000,true)+buttons()+'</form>','ЗАМЕЧАЙ СВОЙ ПРОГРЕСС');
- $('#review-form').onsubmit=ev=>{ev.preventDefault();const f=new FormData(ev.target),next=clone(state),entry={id:r.id,date:f.get('date'),win:f.get('win').trim(),lesson:f.get('lesson').trim(),next:f.get('next').trim()};if(!entry.win&&!entry.lesson&&!entry.next){$('#form-error').textContent='Добавь хотя бы одну мысль.';return;}const idx=next.reviews.findIndex(x=>x.id===r.id);if(idx<0)next.reviews.push(entry);else next.reviews[idx]=entry;submit(next);};
-}
-function submit(next){try{C.validate(next);if(commit(next)){$('#editor').close();toast('Изменения сохранены');}}catch(err){$('#form-error').textContent=err.message;}}
-function exportData(data=pendingState||state,name='mandala-'+localDate()+'.json', message='Резервная копия подготовлена'){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000);toast(message);}
-function help(){showDialog('<h2 id="dialog-title">Одна цель. Восемь опор.</h2><p>Мандала 9×9 помогает превратить большое намерение в конкретные действия. Это формат планирования, связанный с методом Харады; здесь — его практическая адаптация.</p><div class="help-grid"><div><b>01 · Центр.</b> Запиши главную цель и дату проверки результата.</div><div><b>02 · Восемь направлений.</b> Вокруг центра — то, что поможет прийти к цели. Каждое направление повторяется в центре своего блока.</div><div><b>03 · 64 действия.</b> В каждом внешнем блоке восемь шагов. Нажимай на ячейки, уточняй результат, срок и статус.</div><div><b>04 · Ритм.</b> Выбери три действия на неделю. В конце недели запиши итоги и обнови фокус.</div></div><p class="small-note">Процент показывает долю выполненных действий, а не вероятность достижения цели. Повторяющиеся привычки можно возвращать в работу после очередного цикла.</p><div class="dialog-actions"><button class="btn primary" data-act="close">Понятно, начнём</button></div>','КАК ПОЛЬЗОВАТЬСЯ');}
-function settings(){
- let config='';try{config=localStorage.getItem(CONFIG)||'';}catch{}
- showDialog('<h2 id="dialog-title">Данные и облако</h2><p>Изменения сохраняются в этом браузере после кнопки «Сохранить» или отметки действия. Для другого устройства используй JSON-копию или Firebase.</p>'+(storageError?'<div class="notice error">'+e(storageError)+'</div>':'')+'<div class="settings-block"><h3>Резервные копии</h3><div class="settings-buttons"><button class="btn" data-act="export">↓ Скачать JSON</button><button class="btn" data-act="import">↑ Импорт JSON</button><button class="btn" data-act="restore">Вернуть предыдущую копию</button></div><p class="small-note">Очистка данных браузера удалит локальную матрицу. Экспортируй копию время от времени. Перед импортом текущая версия остаётся в предыдущей копии.</p></div><div class="settings-block"><h3>Firebase · перенос между устройствами</h3><p class="small-note">Создай проект и настрой доступ по инструкции <a href="SETUP.html" target="_blank" rel="noopener">Подключение и запуск →</a>. Синхронизация по кнопке: сначала загрузи облачную версию, затем сохрани изменения в облако.</p><label for="firebase-config">Конфигурация веб-приложения Firebase</label><textarea id="firebase-config" spellcheck="false" placeholder=\'{"apiKey":"…","authDomain":"…","projectId":"…","appId":"…"}\'>'+e(config)+'</textarea><p class="small-note">Можно вставить JSON или целиком блок const firebaseConfig = { … }. Без сервисных ключей и паролей.</p><div class="settings-buttons"><button class="btn" data-act="cloud-init">1. Подключить проект</button><button class="btn primary" data-act="cloud-login" '+(!cloud?'disabled':'')+'>2. Войти через Google</button></div><div id="cloud-status" class="cloud-status" role="status"></div><div class="settings-buttons"><button class="btn" data-act="cloud-load" '+(!cloud?.auth.currentUser?'disabled':'')+'>↓ Загрузить из облака</button><button class="btn" data-act="cloud-save" '+(!cloud?.auth.currentUser?'disabled':'')+'>↑ Сохранить в облако</button><button class="btn" data-act="cloud-logout" '+(!cloud?.auth.currentUser?'disabled':'')+'>Выйти</button></div><p class="small-note">Облако не перезаписывается автоматически. Если версия изменилась на другом устройстве, приложение остановит запись. Сначала сохрани свою JSON-копию, затем загрузи актуальную версию.</p></div>','ТВОИ ДАННЫЕ — ПОД КОНТРОЛЕМ');updateCloudUI();
-}
-function updateCloudUI(){
- const el=$('#cloud-status');if(el)el.textContent=cloudMessage||(cloud?.auth.currentUser?'Вход выполнен: '+cloud.auth.currentUser.email:cloud?'Проект подключён. Войди в Google.':'Облако ещё не подключено.');
- ['cloud-load','cloud-save','cloud-logout'].forEach(act=>{const b=$('[data-act="'+act+'"]');if(b)b.disabled=cloudBusy||!cloud?.auth.currentUser;});
- const b=$('[data-act="cloud-login"]');if(b)b.disabled=cloudBusy||!cloud;
- const b2=$('[data-act="cloud-init"]');if(b2)b2.disabled=cloudBusy;saveStatus();
-}
-async function cloudInit(){
- if(cloudBusy)return;
- let config;try{
-  let raw=$('#firebase-config').value.trim();raw=raw.replace(/^(?:const|let|var)\s+firebaseConfig\s*=\s*/,'').replace(/;\s*$/,'');
-  // Parse config data without executing pasted JavaScript.
-  raw=raw.replace(/([{,]\s*)([A-Za-z][A-Za-z0-9]*)(\s*:)/g,'$1"$2"$3').replace(/,\s*}/g,'}');
-  config=JSON.parse(raw);for(const k of ['apiKey','authDomain','projectId','appId'])if(typeof config[k]!=='string'||!config[k])throw Error('Нужно заполнить '+k);
- }catch(err){cloudMessage='Не удалось прочитать конфигурацию: '+err.message;updateCloudUI();return;}
- if(location.protocol==='file:'){cloudMessage='Для Firebase открой сайт по HTTPS (например, GitHub Pages). Локальная матрица уже работает.';updateCloudUI();return;}
- cloudBusy=true;cloudMessage='Подключение Firebase…';updateCloudUI();
- try{
-  const base='https://www.gstatic.com/firebasejs/13.3.0/';
-  const [appSDK,authSDK,dbSDK]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
-  if(cloud){cloud.unsubscribe?.();await authSDK.signOut(cloud.auth);await appSDK.deleteApp(cloud.app);}
-  const app=appSDK.initializeApp(config),auth=authSDK.getAuth(app),db=dbSDK.getFirestore(app);
-  cloud={app,auth,db,authSDK,dbSDK,revision:null,userId:null};
-  await auth.authStateReady();
-  cloud.unsubscribe=authSDK.onAuthStateChanged(auth,user=>{if(cloud.userId!==user?.uid){cloud.revision=null;cloud.userId=user?.uid||null;}updateCloudUI();});
-  localStorage.setItem(CONFIG,JSON.stringify(config,null,2));cloudMessage='Проект подключён. '+(auth.currentUser?'Аккаунт: '+auth.currentUser.email+'. UID: '+auth.currentUser.uid:'Нажми «Войти через Google».');
- }catch(err){cloudMessage=cloudError(err);}finally{cloudBusy=false;updateCloudUI();}
-}
-function cloudError(err){const codes={'auth/unauthorized-domain':'Добавь домен сайта в Authentication → Settings → Authorized domains.','auth/popup-blocked':'Разреши всплывающее окно и снова нажми вход.','auth/popup-closed-by-user':'Окно входа закрыто. Можно попробовать ещё раз.','auth/operation-not-allowed':'Включи Google в Firebase Authentication → Sign-in method.','permission-denied':'Нет доступа: проверь правила Firestore и UID владельца.','unavailable':'Облако недоступно. Локальные данные остаются в браузере.','resource-exhausted':'Достигнут лимит Firebase. Локальная версия доступна.'};return codes[err.code]||('Не удалось выполнить операцию: '+err.message);}
-async function cloudLogin(){
- if(!cloud||cloudBusy)return;
- cloudBusy=true;cloudMessage='Ожидаем вход в Google…';updateCloudUI();
- try{await cloud.authSDK.signInWithPopup(cloud.auth,new cloud.authSDK.GoogleAuthProvider());cloudMessage='Вход выполнен: '+cloud.auth.currentUser.email+'. UID: '+cloud.auth.currentUser.uid+'. Для существующей матрицы сначала нажми «Загрузить из облака».';}catch(err){cloudMessage=cloudError(err);}finally{cloudBusy=false;updateCloudUI();}
-}
-function cloudRef(){return cloud.dbSDK.doc(cloud.db,'users',cloud.auth.currentUser.uid,'matrices','main');}
-async function cloudLoad(){
- if(!cloud?.auth.currentUser||cloudBusy)return;
- if(!confirm('Заменить локальную матрицу облачной? Текущая останется в предыдущей копии. Для отдельного архива сначала скачай JSON.'))return;
- cloudBusy=true;cloudMessage='Читаем облачную версию…';updateCloudUI();
- try{
-  const snap=await cloud.dbSDK.getDocFromServer(cloudRef());
-  if(!snap.exists()){cloud.revision=0;cloudMessage='В облаке пока пусто. Можно сохранить текущую матрицу.';return;}
-  const doc=snap.data(),data=C.validate(JSON.parse(doc.payload));
-  if(commit(data)){cloud.revision=doc.revision;cloudMessage='Загружена версия '+doc.revision+'. На устройстве тоже сохранено.';}
- }catch(err){cloudMessage=cloudError(err);}finally{cloudBusy=false;updateCloudUI();}
-}
-async function cloudSave(){
- if(!cloud?.auth.currentUser||cloudBusy)return;
- cloudBusy=true;cloudMessage='Сохраняем облачную версию…';updateCloudUI();
- try{
-  const payload=JSON.stringify(C.validate(state)),ref=cloudRef(),expected=cloud.revision;
-  const revision=await cloud.dbSDK.runTransaction(cloud.db,async tx=>{
-   const snap=await tx.get(ref);
-   const rev=C.nextRevision(snap.exists()?snap.data().revision:null,expected);
-   tx.set(ref,{payload,revision:rev,updatedAt:cloud.dbSDK.serverTimestamp()});return rev;
+  /* ---------- Месяцы ---------- */
+  const plan = () => plans.find(p => p.id === ui.planId) ?? plans[0];
+  const mstate = (id = plan().id) => state.months[id] ?? (state.months[id] = { start: '', tasks: {}, notes: {} });
+  const started = p => !!state.months[p.id]?.start;
+  function pickPlan() {
+    const t = today();
+    const run = plans.filter(started);
+    const live = run.filter(p => t <= C.addDays(state.months[p.id].start, 29)).at(-1);
+    const next = plans.find(p => !started(p) && (!run.length || p.number > run.at(-1).number));
+    return (live ?? next ?? run.at(-1) ?? plans[0]).id;
+  }
+  function todayIndex(p = plan()) {
+    const start = state.months[p.id]?.start;
+    return start ? Math.max(0, Math.min(29, C.offset(today(), start))) : 0;
+  }
+  function suggestedStart(p) {
+    const prev = plans.filter(x => x.number < p.number && started(x)).at(-1);
+    const after = prev ? C.addDays(state.months[prev.id].start, 30) : '';
+    return after > today() ? after : today();
+  }
+  function startMonth(p, date) {
+    if (!C.validDate(date)) { toast('Выбери дату начала.'); return false; }
+    const clash = plans.find(x => x.id !== p.id && started(x) && Math.abs(C.offset(date, state.months[x.id].start)) < 30);
+    if (clash) { toast('Эта дата попадает в месяц ' + clash.number + '. Выбери дату после ' + dateShort(C.addDays(state.months[clash.id].start, 29)) + '.'); return false; }
+    mstate(p.id).start = date; save(); return true;
+  }
+  ui.planId = pickPlan(); ui.day = todayIndex();
+
+  /* ---------- Мелкие части интерфейса ---------- */
+  let toastTimer;
+  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200); }
+  const chip = cat => `<span class="chip" style="--c:${C.CATS[cat][1]}">${e(C.CATS[cat][0])}</span>`;
+  const bar = (value, max, color = 'var(--accent)') => `<div class="bar"><i style="width:${max ? Math.min(100, Math.max(0, value / max * 100)) : 0}%;background:${color}"></i></div>`;
+  const empty = text => `<p class="empty">${text}</p>`;
+  function monthTabs() {
+    if (plans.length < 2) return '';
+    return '<div class="tabs" role="tablist">' + plans.map(p =>
+      `<button role="tab" aria-selected="${p.id === plan().id}" data-act="pick-plan" data-id="${p.id}">Месяц ${p.number}${started(p) ? '' : ' · не начат'}</button>`).join('') + '</div>';
+  }
+  function head(title, sub, extra = '') {
+    return `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p>${sub}</p>` : ''}</div>${extra}</header>`;
+  }
+
+  /* Цветок дня: один лепесток на задание, закрашивается при завершении. */
+  function mandala(tasks, records, size = 230) {
+    const n = tasks.length, r = size / 2;
+    const len = r * 0.36, wid = Math.min(r * 0.21, (2 * Math.PI * r * 0.55) / n * 0.46);
+    const petals = tasks.map((t, i) => {
+      const done = !!records[t.id]?.done;
+      return `<ellipse class="petal${done ? ' on' : ''}${ui.just === t.id ? ' just' : ''}" cx="${r}" cy="${r - r * 0.56}" rx="${wid}" ry="${len}" transform="rotate(${i * 360 / n} ${r} ${r})" style="--c:${C.CATS[t.cat][1]}"><title>${e(t.title)}</title></ellipse>`;
+    }).join('');
+    const done = tasks.filter(t => records[t.id]?.done).length;
+    return `<svg class="mandala${done === n ? ' full' : ''}" viewBox="0 0 ${size} ${size}" role="img" aria-label="Выполнено ${done} из ${n}">
+      <circle class="halo" cx="${r}" cy="${r}" r="${r * 0.95}"/>${petals}
+      <circle class="core" cx="${r}" cy="${r}" r="${r * 0.2}"/>
+      <text x="${r}" y="${r + 2}" text-anchor="middle" dominant-baseline="middle" class="core-num">${done}/${n}</text></svg>`;
+  }
+
+  /* ---------- Графики ---------- */
+  function lineChart(points, { target = 0, color = '#6c63e6', unit = '', labels = [], height = 200, zero = true } = {}) {
+    const pts = points.filter(p => p[1] !== null && p[1] !== undefined);
+    if (pts.length < 1) return '';
+    const W = 820, H = height, L = 84, R = 16, T = 22, B = 28;
+    const xs = points.map(p => p[0]), x0 = Math.min(...xs), x1 = Math.max(...xs, x0 + 1);
+    const ys = pts.map(p => p[1]);
+    let y1 = Math.max(...ys, target), y0 = zero ? Math.min(0, ...ys) : Math.min(...ys);
+    if (y1 === y0) { y1 += 1; y0 -= zero ? 0 : 1; }
+    if (!zero) { const pad = (y1 - y0) * 0.15; y0 -= pad; y1 += pad; }
+    const X = x => L + (x - x0) / (x1 - x0) * (W - L - R), Y = y => T + (1 - (y - y0) / (y1 - y0)) * (H - T - B);
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
+    const area = d + ` L${X(pts.at(-1)[0]).toFixed(1)} ${Y(y0)} L${X(pts[0][0]).toFixed(1)} ${Y(y0)} Z`;
+    const fmt = v => (Math.abs(v) >= 1000 ? Math.round(v / 1000) + ' тыс' : Math.round(v * 10) / 10) + unit;
+    const grid = [0, 0.5, 1].map(k => { const v = y0 + (y1 - y0) * k; return `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" class="grid"/><text x="${L - 8}" y="${Y(v) + 4}" text-anchor="end" class="axis">${fmt(v)}</text>`; }).join('');
+    const tl = target ? `<line x1="${X(x0)}" y1="${Y(0)}" x2="${X(x1)}" y2="${Y(target)}" class="pace"/><text x="${W - R}" y="${Y(target) - 6}" text-anchor="end" class="axis">цель ${fmt(target)}</text>` : '';
+    const xl = labels.map(([x, text]) => `<text x="${X(x)}" y="${H - 6}" text-anchor="middle" class="axis">${e(text)}</text>`).join('');
+    const dots = pts.length <= 31 ? pts.map(p => `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="${color}"><title>${e(p[2] ?? p[1])}</title></circle>`).join('') : '';
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${grid}${tl}<path d="${area}" fill="${color}" opacity=".13"/><path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${dots}${xl}</svg>`;
+  }
+  function dayBars(days, ti) {
+    const W = 640, H = 150, L = 8, B = 22, bw = (W - L * 2) / 30;
+    const max = Math.max(...days.map(d => d.total));
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">` + days.map((d, i) => {
+      const x = L + i * bw + 3, full = (H - B - 8) * d.total / max, part = d.total ? full * d.done / d.total : 0;
+      return `<rect x="${x}" y="${H - B - full}" width="${bw - 6}" height="${full}" rx="4" class="bar-bg"/><rect x="${x}" y="${H - B - part}" width="${bw - 6}" height="${part}" rx="4" class="bar-fg${i === ti ? ' now' : ''}"><title>День ${d.day}: ${d.done} из ${d.total}</title></rect>` +
+        ((i + 1) % 5 === 0 || i === 0 ? `<text x="${x + (bw - 6) / 2}" y="${H - 6}" text-anchor="middle" class="axis">${d.day}</text>` : '');
+    }).join('') + '</svg>';
+  }
+
+  /* ---------- Сегодня ---------- */
+  function startCard(p) {
+    const date = suggestedStart(p);
+    return `<section class="glass start">
+      <div><h2>${p.number === 1 ? 'Начни месяц' : 'Месяц ' + p.number + ' готов'}</h2>
+      <p>«${e(p.title)}». 30 дней, цель ${money(p.target)}. Первый день — дата, которую выберешь. Задания можно завершать сразу.</p></div>
+      <form data-form="start" class="row"><input type="date" name="date" value="${date}" aria-label="Дата первого дня"><button class="btn primary">Начать</button></form>
+    </section>`;
+  }
+  function taskCard(t, rec, dayDate, log) {
+    const done = !!rec.done, open = !done || ui.open.has(t.id);
+    const ex = t.ex ? `<div class="sets"><div class="sets-head"><span>Упражнение</span><span>кг</span><span>повторы</span></div>` + t.ex.map((x, k) => {
+      const prev = dayDate ? (log[x.name] ?? []).filter(r => r.date < dayDate).at(-1) : null;
+      return `<div class="set"><div><b>${e(x.name)}</b><small>${e(x.sets)}${x.hint ? ' · ' + e(x.hint) : ''}${prev ? ` · в прошлый раз ${prev.kg ? prev.kg + ' кг × ' : ''}${prev.reps}` : ''}</small></div>
+        <input type="number" inputmode="decimal" min="0" max="200" step="0.5" aria-label="${e(x.name)}, кг" data-set="${t.id}" data-k="${k}" data-j="0" value="${e(rec.sets?.[k]?.[0] ?? '')}">
+        <input type="number" inputmode="numeric" min="0" max="999" step="1" aria-label="${e(x.name)}, повторы" data-set="${t.id}" data-k="${k}" data-j="1" value="${e(rec.sets?.[k]?.[1] ?? '')}"></div>`;
+    }).join('') + '</div>' : '';
+    const input = t.input ? `<label class="answer"><span>${e(t.input)}</span><textarea data-note="${t.id}" rows="3" maxlength="4000" placeholder="Пиши здесь — попадёт в отчёт месяца">${e(rec.note ?? '')}</textarea></label>` : '';
+    return `<article class="task glass${done ? ' done' : ''}${ui.just === t.id ? ' just' : ''}" id="t-${t.id}" style="--c:${C.CATS[t.cat][1]}">
+      <button class="check" data-act="toggle" data-id="${t.id}" aria-pressed="${done}" aria-label="${done ? 'Вернуть в работу' : 'Завершить задание'}"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
+      <div class="task-main">
+        <div class="task-top">${chip(t.cat)}<span class="time">${mins(t.min)}</span>${done && rec.at ? `<span class="time">готово ${dateShort(rec.at)}</span>` : ''}</div>
+        <h3><button class="title" data-act="open" data-id="${t.id}" aria-expanded="${open}">${e(t.title)}</button></h3>
+        ${open ? `<div class="task-body">
+          <ol>${t.steps.map(s => `<li>${e(s)}</li>`).join('')}</ol>
+          <p class="ready"><b>Готово, когда</b> ${e(t.done.charAt(0).toLowerCase() + t.done.slice(1))}</p>
+          ${ex}${input}
+          <div class="row actions">
+            <button class="btn ${done ? '' : 'primary'}" data-act="toggle" data-id="${t.id}">${done ? 'Вернуть в работу' : 'Завершить задание'}</button>
+            <button class="btn" data-act="copy" data-id="${t.id}">Скопировать запрос для Claude</button>
+          </div></div>` : ''}
+      </div></article>`;
+  }
+  function bodyCard(date) {
+    const b = state.body[date] ?? {};
+    return `<section class="glass body-card"><h2>Состояние дня</h2>
+      <div class="body-grid">
+        <label><span>Вес утром, кг</span><input type="number" inputmode="decimal" step="0.1" min="30" max="250" data-body="weight" data-date="${date}" value="${e(b.weight ?? '')}"></label>
+        <label><span>Сон, часов</span><input type="number" inputmode="decimal" step="0.5" min="0" max="24" data-body="sleep" data-date="${date}" value="${e(b.sleep ?? '')}"></label>
+        <div><span>Самочувствие</span><div class="mood" role="radiogroup" aria-label="Самочувствие">${MOODS.map((m, i) =>
+          `<button role="radio" aria-checked="${b.mood === i + 1}" data-act="mood" data-date="${date}" data-v="${i + 1}">${m}</button>`).join('')}</div></div>
+      </div></section>`;
+  }
+  function viewToday() {
+    const p = plan(), m = mstate(p.id), day = p.days[ui.day], ti = todayIndex(p);
+    const date = m.start ? C.addDays(m.start, ui.day) : '';
+    const total = day.tasks.reduce((s, t) => s + t.min, 0);
+    const doneCount = day.tasks.filter(t => m.tasks[t.id]?.done).length;
+    const left = day.tasks.filter(t => !m.tasks[t.id]?.done).reduce((s, t) => s + t.min, 0);
+    const log = C.exerciseLog(plans, state);
+    const isToday = m.start && date === today();
+    return (m.start ? '' : startCard(p)) + `
+    <section class="hero glass">
+      <div class="hero-text">
+        <p class="when">${date ? cap(dateLong(date)) : 'Месяц ещё не начат'}${isToday ? ' · сегодня' : ''}</p>
+        <h1>День ${ui.day + 1} <span>из 30</span></h1>
+        <p class="focus">${e(day.focus)}</p>
+        <p class="meta">${doneCount === day.tasks.length ? 'Все задания дня завершены' : plural(day.tasks.length, 'задание', 'задания', 'заданий') + ' на ' + mins(total) + (doneCount ? ', осталось ' + mins(left) : '')}</p>
+        <div class="row daynav">
+          <button class="btn round" data-act="day" data-d="-1" ${ui.day === 0 ? 'disabled' : ''} aria-label="Предыдущий день">‹</button>
+          <button class="btn round" data-act="day" data-d="1" ${ui.day === 29 ? 'disabled' : ''} aria-label="Следующий день">›</button>
+          ${m.start && ui.day !== ti ? '<button class="btn" data-act="day-today">К сегодняшнему дню</button>' : ''}
+        </div>
+      </div>
+      <div class="hero-flower">${mandala(day.tasks, m.tasks)}</div>
+    </section>
+    <section class="tasks">${day.tasks.map(t => taskCard(t, m.tasks[t.id] ?? {}, date, log)).join('')}</section>
+    ${date ? bodyCard(date) : ''}`;
+  }
+
+  /* ---------- Месяц ---------- */
+  function viewMonth() {
+    const p = plan(), st = C.monthStats(p, state), ti = started(p) ? todayIndex(p) : -1;
+    const inRange = started(p) && today() >= st.start && today() <= st.end;
+    return head(`Месяц ${p.number}`, `${e(p.title)}. ${st.start ? dateShort(st.start) + ' — ' + dateShort(st.end) : 'Ещё не начат'}`, monthTabs()) + `
+    <section class="kpis">
+      <div class="glass kpi"><span>Оплаты</span><b>${money(st.net)}</b><small>из ${money(p.target)}</small>${bar(st.net, p.target)}</div>
+      <div class="glass kpi"><span>Задания</span><b>${st.done} <i>из ${st.total}</i></b><small>${st.total ? Math.round(st.done / st.total * 100) : 0}% месяца</small>${bar(st.done, st.total, '#23a884')}</div>
+      <div class="glass kpi"><span>Время</span><b>${mins(st.minDone)}</b><small>из ${mins(st.min)} по плану</small>${bar(st.minDone, st.min, '#f08a4b')}</div>
+    </section>
+    <section class="calendar">${p.days.map((d, i) => {
+      const s = st.days[i];
+      return `<button class="glass cell${inRange && i === ti ? ' now' : ''}${s.done === s.total ? ' complete' : ''}" data-act="go-day" data-i="${i}">
+        <span class="cell-top"><b>${i + 1}</b><small>${s.date ? dateShort(s.date) : ''}</small></span>
+        <span class="cell-focus">${e(d.focus)}</span>
+        <span class="cell-foot"><span class="dots">${d.tasks.map(t => `<i class="${mstate(p.id).tasks[t.id]?.done ? 'on' : ''}" style="--c:${C.CATS[t.cat][1]}"></i>`).join('')}</span><small>${mins(s.min)}</small></span>
+      </button>`;
+    }).join('')}</section>`;
+  }
+
+  /* ---------- Продажи ---------- */
+  function viewSales() {
+    const p = plan(), st = C.monthStats(p, state), m = mstate(p.id);
+    const left = Math.max(0, p.target - st.net);
+    const need = p.products.filter(x => x.price > 0).map(x => `${Math.ceil(left / x.price)} × «${e(x.name)}» по ${money(x.price)}`).join(' или ');
+    const inMonth = d => st.start && d >= st.start && d <= st.end;
+    const def = inMonth(today()) || !st.start ? today() : st.end;
+    const pays = state.payments.filter(x => inMonth(x.date)).sort((a, b) => a.date < b.date ? 1 : -1);
+    const fun = state.funnel.filter(x => inMonth(x.date)).sort((a, b) => a.date < b.date ? 1 : -1);
+    const f = st.funnel, rate = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+    const opt = (list, sel) => list.map(x => `<option${x === sel ? ' selected' : ''}>${e(x)}</option>`).join('');
+    return head('Продажи', `Месяц ${p.number}. Записывай каждую оплату и цифры дня — из них строится аналитика.`, monthTabs()) + `
+    <section class="glass goal">
+      <div class="goal-num"><b>${money(st.net)}</b><span>из ${money(p.target)}</span></div>
+      ${bar(st.net, p.target)}
+      <p>${left ? 'До цели ' + money(left) + (need ? ': это ' + need + '.' : '.') : 'Цель месяца взята.'}${st.refunds ? ' Возвраты: ' + money(st.refunds) + '.' : ''}</p>
+    </section>
+    ${st.start ? '' : '<section class="glass note">Месяц ещё не начат. Начни его на странице «Сегодня», и оплаты будут считаться в этот месяц.</section>'}
+    <div class="two">
+      <section class="glass"><h2>Новая оплата</h2>
+        <form data-form="pay" class="form">
+          <label><span>Дата</span><input type="date" name="date" value="${def}" required></label>
+          <label><span>Что купили</span><select name="product" data-price>${p.products.map(x => `<option data-p="${x.price}">${e(x.name)}</option>`).join('')}</select></label>
+          <label><span>Сумма, ₽</span><input type="number" name="amount" inputmode="numeric" min="1" step="1" value="${p.products[0].price || ''}" required></label>
+          <label><span>Откуда клиент</span><select name="source">${opt(p.sources)}</select></label>
+          <label class="wide"><span>Заметка</span><input name="note" maxlength="200" placeholder="Имя клиента, срок, условия"></label>
+          <label class="tick"><input type="checkbox" name="refund"><span>Это возврат</span></label>
+          <button class="btn primary">Записать оплату</button>
+        </form></section>
+      <section class="glass"><h2>Цифры дня</h2>
+        <form data-form="funnel" class="form">
+          <label><span>Дата</span><input type="date" name="date" value="${def}" required></label>
+          <label><span>Канал</span><select name="source">${opt(p.sources)}</select></label>
+          ${C.STAGES.map(([k, label]) => `<label><span>${label}</span><input type="number" name="${k}" inputmode="numeric" min="0" max="10000" step="1" value="0" required></label>`).join('')}
+          <button class="btn primary">Сохранить цифры дня</button>
+        </form>
+        <p class="hint">Повторная запись на ту же дату и канал заменяет прежнюю.</p></section>
+    </div>
+    <section class="glass"><h2>Воронка месяца</h2>
+      <div class="funnel">${[['Касания', f.contacts, ''], ['Ответы', f.answers, rate(f.answers, f.contacts)], ['Пробные поставки', f.trials, rate(f.trials, f.answers)], ['Оплаты', f.payments, rate(f.payments, f.trials)]].map(([label, v, r], i) =>
+        `<div class="stage"><span>${label}</span><b>${v}</b>${bar(v, Math.max(f.contacts, f.answers, f.trials, f.payments, 1), ['#e8618c', '#f08a4b', '#6c63e6', '#23a884'][i])}<small>${r ? r + ' от прошлого шага' : 'первый шаг'}</small></div>`).join('')}</div>
+    </section>
+    <div class="two">
+      <section class="glass"><h2>Оплаты</h2>${pays.length ? '<ul class="list">' + pays.map(x =>
+        `<li><div><b class="${x.amount < 0 ? 'neg' : ''}">${money(x.amount)}</b> <span>${e(x.product)}</span><small>${dateShort(x.date)} · ${e(x.source)}${x.note ? ' · ' + e(x.note) : ''}</small></div><button class="x" data-act="del-pay" data-id="${e(x.id)}" aria-label="Удалить оплату">×</button></li>`).join('') + '</ul>'
+        : empty('Оплат пока нет. Первая появится здесь, как только запишешь её в форме выше.')}</section>
+      <section class="glass"><h2>Записи по дням</h2>${fun.length ? '<ul class="list">' + fun.map(x =>
+        `<li><div><b>${dateShort(x.date)}</b> <span>${e(x.source)}</span><small>касаний ${x.contacts} · ответов ${x.answers} · пробных ${x.trials}</small></div><button class="x" data-act="del-fun" data-date="${x.date}" data-src="${e(x.source)}" aria-label="Удалить запись">×</button></li>`).join('') + '</ul>'
+        : empty('Вечером внеси касания, ответы и пробные поставки за день — так будет видно, какой канал работает.')}</section>
+    </div>`;
+  }
+
+  /* ---------- Спорт ---------- */
+  function viewSport() {
+    const p = plan();
+    const log = C.exerciseLog(plans, state);
+    const dates = Object.keys(state.body).sort();
+    const first = dates[0];
+    const series = k => dates.filter(d => state.body[d][k]).map(d => [C.offset(d, first), Number(state.body[d][k]), dateShort(d) + ': ' + state.body[d][k]]);
+    const weight = series('weight'), mood = series('mood'), sleep = series('sleep');
+    const labels = dates.length ? [[0, dateShort(first)], [C.offset(dates.at(-1), first), dateShort(dates.at(-1))]].filter((x, i, a) => i === 0 || x[0] !== a[0][0]) : [];
+    let workouts = 0, workoutsDone = 0;
+    for (const pl of plans) for (const d of pl.days) for (const t of d.tasks) if (t.ex) { workouts++; if (state.months[pl.id]?.tasks[t.id]?.done) workoutsDone++; }
+    const score = r => r.kg * 1000 + r.reps;
+    const rows = Object.entries(log).map(([name, list]) => {
+      const a = list[0], z = list.at(-1), best = list.reduce((m, r) => score(r) > score(m) ? r : m, a);
+      const show = r => (r.kg ? r.kg + ' кг × ' : '') + r.reps;
+      const up = list.length > 1 && score(z) > score(a);
+      return `<tr><td>${e(name)}</td><td>${show(a)}</td><td>${show(z)}${up ? ' <i class="up">рост</i>' : ''}</td><td>${show(best)}</td><td>${list.length}</td></tr>`;
+    }).join('');
+    const dw = weight.length > 1 ? Math.round((weight.at(-1)[1] - weight[0][1]) * 10) / 10 : null;
+    return head('Спорт', 'Вес тела, самочувствие и лучший подход в каждом упражнении.') + `
+    <section class="kpis">
+      <div class="glass kpi"><span>Тренировки</span><b>${workoutsDone} <i>из ${workouts}</i></b>${bar(workoutsDone, workouts, '#23a884')}</div>
+      <div class="glass kpi"><span>Вес сейчас</span><b>${weight.length ? weight.at(-1)[1] + ' кг' : '—'}</b><small>${dw === null ? 'запиши вес хотя бы дважды' : (dw > 0 ? '+' : '') + dw + ' кг с первой записи'}</small></div>
+      <div class="glass kpi"><span>Среднее самочувствие</span><b>${mood.length ? (mood.reduce((s, x) => s + x[1], 0) / mood.length).toFixed(1) + ' из 5' : '—'}</b><small>${sleep.length ? 'сон в среднем ' + (sleep.reduce((s, x) => s + x[1], 0) / sleep.length).toFixed(1) + ' ч' : 'отмечай в «Состоянии дня»'}</small></div>
+    </section>
+    <div class="two">
+      <section class="glass"><h2>Вес тела</h2>${weight.length > 1 ? lineChart(weight, { color: '#23a884', unit: ' кг', labels, zero: false }) : empty('График появится после двух записей веса. Поле — внизу страницы «Сегодня».')}</section>
+      <section class="glass"><h2>Самочувствие</h2>${mood.length > 1 ? lineChart(mood, { color: '#e8618c', labels, zero: false }) : empty('Отмечай самочувствие каждый день — увидишь, как оно связано с нагрузкой и сном.')}</section>
+    </div>
+    <section class="glass"><h2>Прогресс в упражнениях</h2>${rows ? `<div class="scroll"><table><thead><tr><th>Упражнение</th><th>Первый раз</th><th>Последний раз</th><th>Лучший</th><th>Записей</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : empty('На тренировке записывай лучший подход: вес и повторы. Здесь появится сравнение первого и последнего раза.')}</section>
+    ${p.sportGuide ? `<section class="glass"><h2>Правила программы</h2><ul class="guide">${p.sportGuide.map(s => `<li>${e(s)}</li>`).join('')}</ul></section>` : ''}`;
+  }
+
+  /* ---------- Аналитика ---------- */
+  function viewStats() {
+    const p = plan(), st = C.monthStats(p, state), ti = started(p) ? todayIndex(p) : -1;
+    const all = plans.map(x => C.monthStats(x, state));
+    const lifetime = state.payments.reduce((s, x) => s + x.amount, 0);
+    const passed = st.start ? Math.max(0, Math.min(30, C.offset(today(), st.start) + 1)) : 0;
+    let streak = 0;
+    for (let i = Math.min(ti, 29); i >= 0 && st.days[i].done > 0; i--) streak++;
+    const pace = passed ? st.net / passed * 30 : 0;
+    const cash = st.days.slice(0, Math.max(passed, 1)).map(d => [d.day, d.balance, 'День ' + d.day + ': ' + money(d.balance)]);
+    const cats = Object.entries(st.byCat).filter(([, v]) => v.total);
+    const src = Object.entries(st.bySource).filter(([, v]) => v.contacts || v.answers || v.trials || v.payments || v.net).sort((a, b) => b[1].net - a[1].net || b[1].answers - a[1].answers);
+    const prod = Object.entries(st.byProduct).filter(([, v]) => v.payments || v.net);
+    const rate = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+    return head('Аналитика', `Месяц ${p.number}: ${e(p.title)}`, monthTabs()) + `
+    <section class="kpis four">
+      <div class="glass kpi"><span>Оплаты месяца</span><b>${money(st.net)}</b><small>${Math.round(st.net / p.target * 100)}% цели</small>${bar(st.net, p.target)}</div>
+      <div class="glass kpi"><span>Если так пойдёт</span><b>${passed > 3 ? money(pace) : '—'}</b><small>${passed > 3 ? 'к концу месяца при текущем темпе' : 'прогноз появится на четвёртый день месяца'}</small></div>
+      <div class="glass kpi"><span>Задания</span><b>${rate(st.done, st.total)}</b><small>${st.done} из ${st.total}, вложено ${mins(st.minDone)}</small></div>
+      <div class="glass kpi"><span>Дней подряд</span><b>${streak}</b><small>с хотя бы одним завершённым заданием</small></div>
+    </section>
+    <section class="glass"><h2>Оплаты нарастающим итогом</h2>${st.start ? lineChart([[1, null], ...cash, [30, null]].filter((x, i, a) => x[1] !== null || i === 0 || i === a.length - 1), { target: p.target, unit: ' ₽', labels: [[1, 'день 1'], [10, '10'], [20, '20'], [30, '30']] }) + '<p class="hint">Пунктир — ровный путь к цели. Линия выше пунктира — идёшь с опережением.</p>' : empty('График появится, когда начнётся месяц.')}</section>
+    <div class="two">
+      <section class="glass"><h2>Задания по дням</h2>${dayBars(st.days, ti)}</section>
+      <section class="glass"><h2>По направлениям</h2><div class="cats">${cats.map(([k, v]) =>
+        `<div><span>${e(C.CATS[k][0])}</span>${bar(v.done, v.total, C.CATS[k][1])}<small>${v.done} из ${v.total} · ${mins(v.minDone)}</small></div>`).join('')}</div></section>
+    </div>
+    <div class="two">
+      <section class="glass"><h2>Каналы продаж</h2>${src.length ? `<div class="scroll"><table><thead><tr><th>Канал</th><th>Касания</th><th>Ответы</th><th>Пробные</th><th>Оплаты</th><th>Деньги</th></tr></thead><tbody>${src.map(([k, v]) =>
+        `<tr><td>${e(k)}</td><td>${v.contacts}</td><td>${v.answers} <small>${rate(v.answers, v.contacts)}</small></td><td>${v.trials}</td><td>${v.payments}</td><td>${money(v.net)}</td></tr>`).join('')}</tbody></table></div>`
+        : empty('Каналы появятся после первых записей в «Продажах». По этой таблице видно, где удваивать усилия.')}</section>
+      <section class="glass"><h2>Тарифы</h2>${prod.length ? `<div class="scroll"><table><thead><tr><th>Тариф</th><th>Оплат</th><th>Деньги</th></tr></thead><tbody>${prod.map(([k, v]) => `<tr><td>${e(k)}</td><td>${v.payments}</td><td>${money(v.net)}</td></tr>`).join('')}</tbody></table></div>` : empty('Здесь будет видно, какой тариф приносит деньги.')}
+        <h2 class="gap">Воронка</h2><p class="conv">Касания ${st.funnel.contacts} → ответы ${st.funnel.answers} (${rate(st.funnel.answers, st.funnel.contacts)}) → пробные ${st.funnel.trials} (${rate(st.funnel.trials, st.funnel.answers)}) → оплаты ${st.funnel.payments} (${rate(st.funnel.payments, st.funnel.trials)})</p></section>
+    </div>
+    <section class="glass"><h2>Все месяцы</h2><div class="scroll"><table><thead><tr><th>Месяц</th><th>Даты</th><th>Цель</th><th>Оплаты</th><th>Задания</th><th>Касания</th></tr></thead><tbody>${all.map(s =>
+      `<tr><td>${s.number}. ${e(s.title)}</td><td>${s.start ? dateShort(s.start) + ' — ' + dateShort(s.end) : 'не начат'}</td><td>${money(s.target)}</td><td>${money(s.net)}</td><td>${s.done} из ${s.total}</td><td>${s.funnel.contacts}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="3">Всего оплат за всё время</td><td colspan="3">${money(lifetime)}</td></tr></tfoot></table></div></section>`;
+  }
+
+  /* ---------- Данные ---------- */
+  function viewData() {
+    const p = plan(), m = mstate(p.id), nextNo = String(plans.at(-1).number + 1).padStart(2, '0');
+    return head('Данные', 'Отчёт месяца, следующий месяц и резервная копия.', monthTabs()) + `
+    ${storageError ? `<section class="glass note warn">${e(storageError)}</section>` : ''}
+    <section class="glass"><h2>Итоги месяца ${p.number} своими словами</h2>
+      <p class="hint">Эти четыре поля уходят в отчёт. По ним и по твоим ответам в заданиях собирается следующий месяц.</p>
+      <div class="notes">${C.NOTE_FIELDS.map(([k, label]) => `<label><span>${label}</span><textarea rows="3" maxlength="3000" data-mnote="${k}">${e(m.notes[k] ?? '')}</textarea></label>`).join('')}</div>
+      <div class="row"><button class="btn primary" data-act="report">Скачать отчёт месяца</button></div>
+    </section>
+    <section class="glass"><h2>Как получить следующий месяц</h2>
+      <ol class="steps">
+        <li>Скачай отчёт месяца кнопкой выше. В файле — что выполнено, твои ответы, оплаты, воронка, вес и тренировки.</li>
+        <li>Отправь файл в чат Claude и попроси составить следующий месяц. Формат плана уже описан внутри отчёта. Можно приложить учебники по маркетплейсам — задания будут опираться на них.</li>
+        <li>Полученный файл <b>month-${nextNo}.json</b> загрузи на GitHub в папку <b>months</b> рядом с остальными. Сайт найдёт его сам на всех устройствах.</li>
+      </ol>
+      <div class="row"><button class="btn" data-act="load-plan">Загрузить план только в этот браузер</button></div>
+      <p class="hint">Прошлые месяцы остаются: их видно в «Аналитике» и по вкладкам месяцев.</p>
+    </section>
+    <section class="glass"><h2>Дата начала месяца ${p.number}</h2>
+      <form data-form="restart" class="row"><input type="date" name="date" value="${m.start || suggestedStart(p)}" aria-label="Дата первого дня"><button class="btn">${m.start ? 'Изменить дату' : 'Начать месяц'}</button></form>
+      <p class="hint">Отметки заданий привязаны к номеру дня и не сдвигаются. Оплаты и вес привязаны к датам.</p>
+    </section>
+    <section class="glass"><h2>Резервная копия</h2>
+      <p class="hint">Данные лежат в этом браузере. Чтобы перенести их на телефон или другой компьютер, скачай копию здесь и восстанови там.</p>
+      <div class="row"><button class="btn" data-act="backup">Скачать копию</button><button class="btn" data-act="restore">Восстановить из копии</button><button class="btn danger" data-act="reset">Стереть всё</button></div>
+    </section>`;
+  }
+
+  /* ---------- Отрисовка ---------- */
+  const renderers = { today: viewToday, month: viewMonth, sales: viewSales, sport: viewSport, stats: viewStats, data: viewData };
+  function render({ keepScroll = true } = {}) {
+    const y = window.scrollY;
+    $('#view').innerHTML = renderers[ui.view]();
+    $('#view').dataset.screen = ui.view;
+    document.querySelectorAll('.dock [data-view]').forEach(b => b.setAttribute('aria-current', b.dataset.view === ui.view ? 'page' : 'false'));
+    if (keepScroll) window.scrollTo(0, y); else window.scrollTo(0, 0);
+    ui.just = '';
+  }
+  function go(view, push = true) {
+    if (!VIEWS.includes(view)) view = 'today';
+    ui.view = view;
+    if (push && location.hash !== '#' + view) history.replaceState(null, '', '#' + view);
+    const v = $('#view'); v.classList.remove('enter'); void v.offsetWidth; v.classList.add('enter');
+    render({ keepScroll: false });
+  }
+
+  /* ---------- Действия ---------- */
+  function findTask(id) {
+    for (const p of plans) for (let i = 0; i < p.days.length; i++) { const t = p.days[i].tasks.find(x => x.id === id); if (t) return { p, i, t }; }
+    return null;
+  }
+  const record = (p, id) => mstate(p.id).tasks[id] ?? (mstate(p.id).tasks[id] = {});
+  function toggle(id) {
+    const { p, t } = findTask(id);
+    if (!started(p)) { if (!startMonth(p, suggestedStart(p))) return; toast('Месяц начат сегодня. Дату можно изменить в «Данных».'); }
+    const r = record(p, id);
+    if (r.done) { delete r.done; delete r.at; ui.open.add(id); }
+    else { r.done = true; r.at = today(); ui.open.delete(id); ui.just = id; }
+    save(); render();
+    if (r.done) {
+      const day = p.days[ui.day].tasks;
+      if (day.every(x => mstate(p.id).tasks[x.id]?.done)) toast('День закрыт. Все задания завершены.');
+      else toast('Завершено: ' + t.title);
+    }
+  }
+  async function copyPrompt(id) {
+    const { p, i, t } = findTask(id), r = mstate(p.id).tasks[id] ?? {};
+    const sets = t.ex ? t.ex.map((x, k) => r.sets?.[k]?.[1] ? `${x.name}: ${r.sets[k][0] ? r.sets[k][0] + ' кг × ' : ''}${r.sets[k][1]}` : '').filter(Boolean) : [];
+    const text = [p.context ?? '',
+      `Задание из моего плана на месяц (день ${i + 1}, «${t.title}», на него отведено ${mins(t.min)}).\nШаги:\n${t.steps.map((s, k) => (k + 1) + '. ' + s).join('\n')}\nГотово, когда: ${t.done}`,
+      t.prompt ?? 'Распиши подробно, как выполнить это задание: что именно делать по шагам, готовые тексты и примеры, чего избегать. Уложись в отведённое время.',
+      r.note ? 'Что у меня уже есть:\n' + r.note : '', sets.length ? 'Мои результаты сегодня:\n' + sets.join('\n') : ''].filter(Boolean).join('\n\n');
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const ta = Object.assign(document.createElement('textarea'), { value: text });
+      document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    toast('Запрос скопирован. Вставь его в чат Claude.');
+  }
+  function download(name, data) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: name });
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function confirmBox(title, text, okLabel, onOk) {
+    $('#dialog-body').innerHTML = `<h2>${e(title)}</h2><p>${e(text)}</p><div class="row"><button class="btn" data-act="close">Отмена</button><button class="btn danger" data-act="confirm">${e(okLabel)}</button></div>`;
+    $('#dialog').onclose = null;
+    $('#dialog-body').querySelector('[data-act=confirm]').onclick = () => { $('#dialog').close(); onOk(); };
+    $('#dialog').showModal();
+  }
+  function readFile(input, handler) {
+    const file = input.files[0]; input.value = '';
+    if (!file) return;
+    file.text().then(text => handler(JSON.parse(text))).catch(err => toast(err instanceof SyntaxError ? 'Файл не читается как JSON.' : err.message));
+  }
+
+  document.addEventListener('click', ev => {
+    const nav = ev.target.closest('.dock [data-view]');
+    if (nav) { ev.preventDefault(); go(nav.dataset.view); return; }
+    const b = ev.target.closest('[data-act]');
+    if (!b) return;
+    const d = b.dataset, p = plan();
+    switch (d.act) {
+      case 'toggle': toggle(d.id); break;
+      case 'open': ui.open.has(d.id) ? ui.open.delete(d.id) : ui.open.add(d.id); if (mstate(p.id).tasks[d.id]?.done) render(); break;
+      case 'copy': copyPrompt(d.id); break;
+      case 'day': ui.day = Math.max(0, Math.min(29, ui.day + Number(d.d))); ui.picked = true; render({ keepScroll: false }); break;
+      case 'day-today': ui.day = todayIndex(); render({ keepScroll: false }); break;
+      case 'go-day': ui.day = Number(d.i); ui.picked = true; go('today'); break;
+      case 'pick-plan': ui.planId = d.id; ui.day = todayIndex(); ui.picked = true; render(); break;
+      case 'mood': { const b0 = state.body[d.date] ?? (state.body[d.date] = {}); if (b0.mood === Number(d.v)) delete b0.mood; else b0.mood = Number(d.v); save(); render(); break; }
+      case 'del-pay': confirmBox('Удалить оплату?', 'Запись исчезнет из месяца и аналитики.', 'Удалить', () => { state.payments = state.payments.filter(x => x.id !== d.id); save(); render(); }); break;
+      case 'del-fun': state.funnel = state.funnel.filter(x => !(x.date === d.date && x.source === d.src)); save(); render(); break;
+      case 'report': {
+        if (!started(p)) { toast('Сначала начни месяц — в отчёте нужны даты.'); break; }
+        save(); download(`mandala-report-${p.id}.json`, C.buildReport(p, state, plans, today())); toast('Отчёт скачан. Отправь его в чат Claude.'); break;
+      }
+      case 'backup': save(); download(`mandala-backup-${today()}.json`, state); toast('Копия скачана.'); break;
+      case 'restore': $('#file-backup').click(); break;
+      case 'load-plan': $('#file-plan').click(); break;
+      case 'reset': confirmBox('Стереть все данные?', 'Отметки, ответы, оплаты, вес и загруженные планы будут удалены из этого браузера. Сначала скачай копию.', 'Стереть всё', () => { state = C.emptyState(); save(); rebuildPlans(remotePlans); ui.planId = pickPlan(); ui.day = 0; render(); toast('Данные стёрты.'); }); break;
+      case 'close': $('#dialog').close(); break;
+    }
   });
-  cloud.revision=revision;cloudMessage='Облачная версия '+revision+' сохранена. На другом устройстве нажми «Загрузить из облака».';
- }catch(err){cloudMessage=cloudError(err);}finally{cloudBusy=false;updateCloudUI();}
-}
-document.addEventListener('click',async ev=>{
- const b=ev.target.closest('button,a.brand');if(!b)return;
- if(b.matches('a.brand')){ev.preventDefault();view='today';viewedDay=null;render();return;}
- if(b.dataset.view){view=b.dataset.view;if(view==='today'){viewedDay=null;openSteps=new Set([0]);}render();return;}
- if(b.dataset.mode){mode=b.dataset.mode;render();return;}
- const act=b.dataset.act,i=Number(b.dataset.i),j=Number(b.dataset.j);
- if(act==='close')$('#editor').close();
- else if(act==='goal')goalEditor();
- else if(act==='project')editProject(b.dataset.id);
- else if(act==='plan-start')startPlan();
- else if(act==='plan-jump' && i>=0 && i<30){viewedDay=i;openSteps=new Set([0]);renderToday();}
- else if(act==='plan-today'){viewedDay=null;openSteps=new Set([0]);renderToday();}
- else if(act==='plan-toggle'){
-  const month=P.stateOf(state);
-  if(month.start && i>=0 && i<30 && j>=0 && j<5 && P.addDays(month.start,i)<=localDate()){
-   mutate(next=>{next.month.checks[i]^=1<<j;});
-   $('[data-act="plan-toggle"][data-j="'+j+'"]')?.focus({preventScroll:true});
+
+  document.addEventListener('input', ev => {
+    const el = ev.target, d = el.dataset;
+    if (d.note) { const { p } = findTask(d.note); record(p, d.note).note = el.value; saveSoon(); }
+    else if (d.set) {
+      const { p, t } = findTask(d.set), r = record(p, d.set);
+      r.sets ??= t.ex.map(() => ['', '']);
+      r.sets[d.k][d.j] = el.value; saveSoon();
+    }
+    else if (d.body) { const b = state.body[d.date] ?? (state.body[d.date] = {}); if (el.value === '') delete b[d.body]; else b[d.body] = Number(el.value); saveSoon(); }
+    else if (d.mnote) { mstate().notes[d.mnote] = el.value; saveSoon(); }
+  });
+  document.addEventListener('change', ev => {
+    const el = ev.target;
+    if (el.matches('select[data-price]')) { const price = el.selectedOptions[0].dataset.p; if (Number(price) > 0) el.form.amount.value = price; }
+    if (el.id === 'file-plan') readFile(el, data => {
+      const np = C.validatePlan(data);
+      if (np.id === window.MANDALA_BUILTIN.id) throw Error('Месяц 1 встроен в сайт. Следующий файл должен называться month-02.');
+      state.plans = state.plans.filter(x => x.id !== np.id).concat(np); save(); rebuildPlans(remotePlans);
+      if (!started(np)) ui.planId = np.id, ui.day = 0;
+      go('today'); toast('План «' + np.title + '» загружен.');
+    });
+    if (el.id === 'file-backup') readFile(el, data => {
+      const next = C.validateState(data);
+      confirmBox('Заменить данные копией?', 'Текущие отметки и записи в этом браузере будут заменены содержимым файла.', 'Заменить', () => { state = next; save(); rebuildPlans(remotePlans); ui.planId = pickPlan(); ui.day = todayIndex(); go('today'); toast('Данные восстановлены.'); });
+    });
+  });
+  document.addEventListener('submit', ev => {
+    ev.preventDefault();
+    const f = ev.target, kind = f.dataset.form, v = Object.fromEntries(new FormData(f)), p = plan();
+    if (kind === 'start' || kind === 'restart') {
+      if (startMonth(p, v.date)) { ui.day = todayIndex(); render(); toast('Месяц ' + p.number + ' начинается ' + dateShort(v.date) + '.'); }
+    } else if (kind === 'pay') {
+      const amount = Math.round(Number(v.amount));
+      if (!C.validDate(v.date) || !(amount > 0)) { toast('Укажи дату и сумму больше нуля.'); return; }
+      state.payments.push({ id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), date: v.date, product: v.product, source: v.source, amount: v.refund ? -amount : amount, note: (v.note ?? '').trim() });
+      save(); render(); toast(v.refund ? 'Возврат записан.' : 'Оплата записана: ' + money(amount));
+    } else if (kind === 'funnel') {
+      const row = { date: v.date, source: v.source };
+      for (const [k] of C.STAGES) row[k] = Math.max(0, Math.round(Number(v[k]) || 0));
+      if (!C.validDate(v.date)) { toast('Укажи дату.'); return; }
+      state.funnel = state.funnel.filter(x => !(x.date === row.date && x.source === row.source)).concat(row);
+      save(); render(); toast('Цифры дня сохранены.');
+    }
+  });
+  window.addEventListener('hashchange', () => go(location.hash.slice(1), false));
+  window.addEventListener('beforeunload', () => { clearTimeout(saveTimer); save(); });
+
+  /* ---------- Следующие месяцы из папки months на GitHub ---------- */
+  let remotePlans = [];
+  async function probeRemote() {
+    if (!location.protocol.startsWith('http')) return;
+    const found = [];
+    for (let n = 2; n <= 36; n++) {
+      try {
+        const res = await fetch(`months/month-${String(n).padStart(2, '0')}.json`, { cache: 'no-store' });
+        if (!res.ok) break;
+        found.push(C.validatePlan(await res.json()));
+      } catch (err) { if (/^Файл плана/.test(err.message)) toast(`month-${String(n).padStart(2, '0')}.json: ${err.message}`); break; }
+    }
+    if (!found.length) return;
+    remotePlans = found; rebuildPlans(found);
+    if (!ui.picked) { ui.planId = pickPlan(); ui.day = todayIndex(); }
+    render();
   }
- }
- else if(act==='chart-point'){
-  const point=P.totals(P.stateOf(state),localDate()).series[i];
-  if(point)$('#chart-readout').textContent='День '+point.day+' · '+money(point.balance);
- }
- else if(act==='activity')activityEditor(b.dataset.date,b.dataset.source);
- else if(act==='payment')paymentEditor(b.dataset.id);
- else if(act==='payments')paymentHistory();
- else if(act==='payment-delete'&&confirm('Удалить эту запись об оплате?')){
-  if(mutate(next=>{next.month.payments=next.month.payments.filter(item=>item.id!==b.dataset.id);}))paymentHistory();
- }
- else if(act==='report-download')downloadReport();
- else if(act==='month-import')$('#month-file').click();
- else if(act==='help')help();
- else if(act==='settings')settings();
- else if(act==='task')taskEditor(i,j);
- else if(act==='area'){selected=i;mode='detail';view='matrix';render();}
- else if(act==='edit-area')areaEditor(i);
- else if(act==='toggle')mutate(s=>{const t=s.areas[i].actions[j];t.status=t.status==='done'?'todo':'done';if(t.status==='done')t.focus=false;});
- else if(act==='focus-toggle'){const t=state.areas[i].actions[j];if(!t.focus&&C.stats(state).focus>=3){toast('В фокусе уже 3 действия. Убери одно, чтобы выбрать новое.');return;}mutate(s=>s.areas[i].actions[j].focus=!t.focus);}
- else if(act==='review')reviewEditor(b.dataset.id);
- else if(act==='delete-review'&&confirm('Удалить эту запись?'))mutate(s=>s.reviews=s.reviews.filter(r=>r.id!==b.dataset.id));
- else if(act==='export')exportData();
- else if(act==='import')$('#import-file').click();
- else if(act==='restore'){
-  try{const raw=localStorage.getItem(BACKUP);if(!raw){toast('Предыдущей копии пока нет.');return;}const data=C.validate(JSON.parse(raw));if(confirm('Вернуть предыдущую локальную копию?')){storageError='';lastRaw=localStorage.getItem(KEY);if(commit(data)){$('#editor').close();toast('Предыдущая копия восстановлена');}}}catch(err){toast('Восстановление не удалось: '+err.message);}
- }
- else if(act==='print'){const prev={view,mode};view='matrix';mode='full';render();const restore=()=>{view=prev.view;mode=prev.mode;render();};window.addEventListener('afterprint',restore,{once:true});window.print();}
- else if(act==='cloud-init')await cloudInit();
- else if(act==='cloud-login')await cloudLogin();
- else if(act==='cloud-load')await cloudLoad();
- else if(act==='cloud-save')await cloudSave();
- else if(act==='cloud-logout'&&cloud&&!cloudBusy){try{await cloud.authSDK.signOut(cloud.auth);cloud.revision=null;cloudMessage='Вход завершён. Локальная матрица остаётся на этом устройстве.';updateCloudUI();}catch(err){toast(cloudError(err));}}
-});
-document.addEventListener('input',ev=>{if(ev.target.id==='search'){search=ev.target.value;renderTaskList();}});
-document.addEventListener('change',ev=>{if(ev.target.id==='plan-day'){viewedDay=Number(ev.target.value);openSteps=new Set([0]);renderToday();$('#plan-day').focus();}if(ev.target.id==='area-filter'){filterArea=ev.target.value;renderTaskList();}if(ev.target.id==='status-filter'){filterStatus=ev.target.value;renderTaskList();}});
-document.addEventListener('toggle', event => {
- const slot=event.target.dataset?.slot;
- if(slot===undefined || !event.target.isConnected)return;
- if(event.target.open)openSteps.add(Number(slot));
- else openSteps.delete(Number(slot));
-},true);
-$('#month-file').onchange=async event=>{
- const file=event.target.files[0];
- event.target.value='';
- if(!file)return;
- try{
-  if(file.size>400000)throw Error('Файл плана больше 400 КБ.');
-  previewNewMonth(P.validatePlan(JSON.parse(await file.text())));
- }catch(error){toast('Не удалось загрузить план: '+error.message);}
-};
-$('#import-file').onchange=async ev=>{const file=ev.target.files[0];ev.target.value='';if(!file)return;try{if(file.size>2000000)throw Error('Размер файла больше 2 МБ');const data=C.validate(JSON.parse(await file.text()));if(!confirm('Заменить матрицу данными из «'+file.name+'»? Текущая версия останется в предыдущей копии.'))return;storageError='';if(commit(data)){$('#editor').close();toast('Матрица импортирована');}}catch(err){toast('Импорт отменён: '+err.message);}};
-window.addEventListener('storage',ev=>{if(ev.key===KEY&&ev.newValue!==lastRaw){if($('#editor').open){toast('Матрица изменена в другой вкладке. Закрой редактор и обнови страницу.');return;}try{state=C.validate(JSON.parse(ev.newValue));lastRaw=ev.newValue;render();toast('Подхвачены изменения из другой вкладки');}catch{toast('Данные в другой вкладке изменились. Обнови страницу.');}}});
-render();
-if(storageError)toast(storageError);
-function updateDate(){
- if(!document.hidden && localDate()!==lastRenderedDate)render();
-}
-document.addEventListener('visibilitychange',updateDate);
-setInterval(updateDate,30000);
+
+  go(location.hash.slice(1) || 'today', false);
+  if (storageError) toast(storageError);
+  probeRemote();
 })();

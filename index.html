@@ -2,60 +2,37 @@
 <html lang="ru">
 <head>
  <meta charset="utf-8">
- <meta name="viewport" content="width=device-width,initial-scale=1">
- <meta name="theme-color" content="#101522">
- <meta name="description" content="План продаж на 30 дней, рабочие задания, воронка и выручка.">
- <title>Мандала · Рабочий месяц</title>
+ <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+ <meta name="theme-color" content="#f3eefb">
+ <meta name="description" content="Задания на каждый день: продажи, сервисы, спорт и английский. Оплаты, воронка и аналитика по месяцам.">
+ <title>Мандала</title>
  <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Geologica:wght@300..700&display=swap" rel="stylesheet">
  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
- <aside class="sidebar">
-  <a href="#" class="brand" aria-label="Мандала — главная"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Мандала</a>
-  <nav aria-label="Основная навигация">
-   <div class="nav-group">
-    <span class="nav-label">Работа</span>
-    <button class="nav active" data-view="today"><span aria-hidden="true">▦</span>Месяц</button>
-    <button class="nav" data-view="pipeline"><span aria-hidden="true">≡</span>Воронка</button>
-    <button class="nav" data-view="analytics"><span aria-hidden="true">▥</span>Динамика</button>
-    <button class="nav" data-view="reports"><span aria-hidden="true">↧</span>Отчёты</button>
-   </div>
-   <div class="nav-group secondary-nav">
-    <span class="nav-label">Стратегия</span>
-    <button class="nav" data-view="matrix"><span aria-hidden="true">◇</span>Матрица</button>
-    <button class="nav" data-view="actions"><span aria-hidden="true">✓</span>Действия</button>
-    <button class="nav" data-view="focus"><span aria-hidden="true">◎</span>Фокус</button>
-    <button class="nav" data-view="reviews"><span aria-hidden="true">◷</span>Рефлексия</button>
-   </div>
-  </nav>
-  <div class="sidebar-bottom"><button class="nav" data-act="settings"><span aria-hidden="true">⚙︎</span>Данные и облако</button></div>
- </aside>
- <main>
-  <header class="topbar">
-   <span id="breadcrumb">Рабочий месяц</span>
-   <div class="top-actions">
-    <span id="save-state" role="status"><i></i>Сохранено на устройстве</span>
-    <button class="icon-btn" data-act="settings" aria-label="Данные и облако">⚙︎</button>
-    <button class="btn small" data-act="export">Резервная копия</button>
-   </div>
-  </header>
-  <div class="page">
-   <section class="page-heading"><div><h1 id="page-title">Рабочий месяц</h1><p id="page-description"></p></div><button class="btn" data-act="goal">Настроить цель</button></section>
-   <section class="goal-banner"><div class="goal-symbol">◎</div><div class="goal-copy"><h2 id="goal-title"></h2><p id="goal-subtitle"></p></div><div class="goal-deadline"><span class="eyebrow">Горизонт</span><strong id="goal-date"></strong><small id="days-left"></small></div><button class="icon-btn" data-act="goal" aria-label="Редактировать главную цель">→</button></section>
-   <section class="metrics" aria-label="Прогресс матрицы">
-    <div><span>Пройдено шагов</span><strong id="done-count">0 <small>/ 64</small></strong><div class="progress-track"><i id="total-bar"></i></div></div>
-    <div><span>В работе</span><strong id="doing-count">0</strong></div>
-    <div><span>Фокус недели</span><strong id="focus-count">0 <small>/ 3</small></strong></div>
-    <button data-act="goal" class="metric-button"><span>Доход от сервисов / мес.</span><strong id="income">Задать цель →</strong><small id="income-note"></small></button>
-   </section>
-   <div id="view-content"></div>
-   <footer><a href="SETUP.html">Запуск и сохранение</a><button class="text-btn" data-act="print">Печать матрицы →</button></footer>
-  </div>
- </main>
- <dialog id="editor" aria-labelledby="dialog-title"><div class="dialog-head"><span class="eyebrow" id="dialog-kicker"></span><button class="icon-btn" data-act="close" aria-label="Закрыть">×</button></div><div id="dialog-content"></div></dialog>
+ <div class="sky" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+ <nav class="dock glass" aria-label="Разделы">
+  <a class="brand" href="#today" aria-label="Мандала">
+   <svg viewBox="0 0 40 40" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.2"><ellipse cx="20" cy="11" rx="5" ry="8.5"/><ellipse cx="20" cy="29" rx="5" ry="8.5"/><ellipse cx="11" cy="20" rx="8.5" ry="5"/><ellipse cx="29" cy="20" rx="8.5" ry="5"/></g><circle cx="20" cy="20" r="3" fill="currentColor"/></svg>
+   <span>Мандала</span>
+  </a>
+  <button data-view="today"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Сегодня</span></button>
+  <button data-view="month"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M4 10h16M9 3v4M15 3v4"/></svg><span>Месяц</span></button>
+  <button data-view="sales"><svg viewBox="0 0 24 24"><path d="M12 3v18M16.5 7.5c-.8-1.4-2.4-2-4.5-2-2.6 0-4.3 1.2-4.3 3.2 0 4.6 9.1 2 9.1 6.6 0 2-1.9 3.2-4.8 3.2-2.3 0-4.1-.8-5-2.4"/></svg><span>Продажи</span></button>
+  <button data-view="sport"><svg viewBox="0 0 24 24"><path d="M3 12h18M6 8v8M18 8v8M3.5 10v4M20.5 10v4"/></svg><span>Спорт</span></button>
+  <button data-view="stats"><svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg><span>Аналитика</span></button>
+  <button data-view="data"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg><span>Данные</span></button>
+ </nav>
+ <main id="view" tabindex="-1"></main>
+ <dialog id="dialog" class="glass"><div id="dialog-body"></div></dialog>
  <div id="toast" role="status" aria-live="polite"></div>
- <input type="file" id="import-file" accept="application/json,.json" hidden>
- <input type="file" id="month-file" accept="application/json,.json" hidden>
- <script src="seed.js"></script><script src="daily.js"></script><script src="plan-data.js"></script><script src="plan.js"></script><script src="core.js"></script><script src="app.js"></script>
+ <input type="file" id="file-plan" accept="application/json,.json" hidden>
+ <input type="file" id="file-backup" accept="application/json,.json" hidden>
+ <script src="months/month-01.js"></script>
+ <script src="core.js"></script>
+ <script src="app.js"></script>
 </body>
 </html>

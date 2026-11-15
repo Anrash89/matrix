@@ -1,4 +1,6 @@
 (function(root){
+ const daily=typeof module!=='undefined'?require('./daily.js'):root.MandalaDaily;
+ const plan=typeof module!=='undefined'?require('./plan.js'):root.MandalaPlan;
  const positions=[0,1,2,3,5,6,7,8];
  function validate(data){
   const str=(s,n)=>typeof s==='string'&&s.length<=n;
@@ -9,6 +11,8 @@
   data.areas.forEach(a=>{if(!a||!str(a.id,80)||ids.has(a.id)||!str(a.title,80)||!a.title.trim()||!str(a.tagline,150)||!str(a.description,2000)||!Array.isArray(a.actions)||a.actions.length!==8)throw Error('В каждом из 8 направлений должно быть 8 действий.');ids.add(a.id);a.actions.forEach(t=>{if(!t||!str(t.id,80)||ids.has(t.id)||!str(t.title,180)||!t.title.trim()||!str(t.notes,5000)||!['todo','doing','done'].includes(t.status)||typeof t.focus!=='boolean'||!date(t.due))throw Error('Некорректные данные действия.');ids.add(t.id);if(t.focus)focused++;});});
   if(focused>3)throw Error('В фокусе может быть не больше 3 действий.');
   if(!Array.isArray(data.reviews)||data.reviews.length>200||data.reviews.some(r=>!r||!str(r.id,80)||!date(r.date)||!str(r.win,3000)||!str(r.lesson,3000)||!str(r.next,3000)))throw Error('Некорректный журнал рефлексии.');
+  if(data.daily!==undefined)daily.validate(data.daily);
+  if(data.cycle!==undefined)plan.validate(data.cycle);
   if(JSON.stringify(data).length>300000)throw Error('Резервная копия слишком большая.');
   return data;
  }
